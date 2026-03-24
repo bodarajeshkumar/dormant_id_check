@@ -8,7 +8,7 @@ import json
 import threading
 import time
 from datetime import datetime
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 import sys
@@ -29,6 +29,10 @@ HISTORY_FILE = 'extraction_history.json'
 
 # Global lock for thread-safe status updates
 status_lock = threading.Lock()
+
+# Global reference to current extractor (for stop functionality)
+current_extractor = None
+current_extractor_lock = threading.Lock()
 
 
 class StatusManager:
@@ -220,8 +224,37 @@ class ExtractorWrapper:
                 'status': 'completed',
                 'error': None,
                 'timestamp': datetime.now().isoformat(),
+                'duration_seconds': duration_seconds,
+                'filename': output_filename
+            })
+            
+        except InterruptedError as e:
+            # Handle user-requested stop
+            end_time = time.time()
+            duration_seconds = int(end_time - start_time)
+            
+            # Mark as stopped
+            StatusManager.update_status({
+                'status': 'stopped',
+                'error': 'Stopped by user',
                 'duration_seconds': duration_seconds
             })
+            
+            # Add stopped entry to history
+            HistoryManager.add_history_entry({
+                'id': datetime.now().strftime('%Y%m%d_%H%M%S'),
+                'start_date': self.start_date,
+                'end_date': self.end_date,
+                'records_processed': self.extractor.total_records_processed if self.extractor else 0,
+                'months_processed': self.extractor.months_processed if self.extractor else 0,
+                'status': 'stopped',
+                'error': 'Stopped by user',
+                'timestamp': datetime.now().isoformat(),
+                'duration_seconds': duration_seconds,
+                'filename': output_filename if hasattr(self, 'output_file') else None
+            })
+            
+            print(f"Extraction stopped by user")
             
         except Exception as e:
             # Calculate duration even for failed jobs
@@ -245,7 +278,8 @@ class ExtractorWrapper:
                 'status': 'failed',
                 'error': str(e),
                 'timestamp': datetime.now().isoformat(),
-                'duration_seconds': duration_seconds
+                'duration_seconds': duration_seconds,
+                'filename': None
             })
             
             print(f"Extraction error: {e}")
@@ -406,6 +440,9 @@ class CloudantExtractorWithCallback(CloudantExtractor):
                     f"{month_duration:.2f} seconds"
                 )
                 
+            except InterruptedError:
+                # Re-raise to stop the extraction
+                raise
             except Exception as e:
                 logger.error(f"Failed to process {year}-{month:02d}: {e}")
                 continue
@@ -474,6 +511,11 @@ def start_retrieval():
         # Create extractor wrapper
         wrapper = ExtractorWrapper(start_date, end_date)
         
+        # Store reference to wrapper for stop functionality
+        global current_extractor
+        with current_extractor_lock:
+            current_extractor = wrapper
+        
         # Start extraction in background thread
         thread = threading.Thread(target=wrapper.run, daemon=True)
         thread.start()
@@ -524,6 +566,131 @@ def reset_status():
         })
         
     except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/stop', methods=['POST'])
+def stop_extraction():
+    """Stop the currently running extraction"""
+    try:
+        global current_extractor
+        
+        with current_extractor_lock:
+            if current_extractor is None:
+                return jsonify({
+                    'success': False,
+                    'error': 'No extraction is currently running'
+                }), 400
+            
+            if current_extractor.extractor is None:
+                return jsonify({
+                    'success': False,
+                    'error': 'Extractor not initialized yet'
+                }), 400
+            
+            # Request stop
+            current_extractor.extractor.request_stop()
+        
+        return jsonify({
+            'success': True,
+            'message': 'Stop requested. Extraction will stop after current batch.'
+        })
+        
+    except Exception as e:
+        logger.error(f"Error stopping extraction: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/download/<filename>', methods=['GET'])
+def download_file(filename):
+    """Download extraction file"""
+    try:
+        # Security: Only allow downloading from extractions directory
+        # and only JSON files
+        if not filename.endswith('.json'):
+            return jsonify({
+                'success': False,
+                'error': 'Invalid file type'
+            }), 400
+        
+        # Check both possible extraction directories
+        file_paths = [
+            os.path.join('backend', 'extractions', filename),
+            os.path.join('backend', 'backend', 'extractions', filename)
+        ]
+        
+        file_path = None
+        for path in file_paths:
+            if os.path.exists(path):
+                file_path = path
+                break
+        
+        if not file_path:
+            return jsonify({
+                'success': False,
+                'error': 'File not found'
+            }), 404
+        
+        # Send file for download
+        return send_file(
+            file_path,
+            as_attachment=True,
+            download_name=filename,
+            mimetype='application/json'
+        )
+        
+    except Exception as e:
+        logger.error(f"Error downloading file: {e}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/extractions', methods=['GET'])
+def list_extractions():
+    """List all available extraction files"""
+    try:
+        extractions = []
+        
+        # Check both possible extraction directories
+        extraction_dirs = [
+            os.path.join('backend', 'extractions'),
+            os.path.join('backend', 'backend', 'extractions')
+        ]
+        
+        for extraction_dir in extraction_dirs:
+            if os.path.exists(extraction_dir):
+                for filename in os.listdir(extraction_dir):
+                    if filename.endswith('.json') and filename.startswith('extraction_'):
+                        file_path = os.path.join(extraction_dir, filename)
+                        file_stats = os.stat(file_path)
+                        
+                        extractions.append({
+                            'filename': filename,
+                            'size': file_stats.st_size,
+                            'size_mb': round(file_stats.st_size / (1024 * 1024), 2),
+                            'created': datetime.fromtimestamp(file_stats.st_ctime).isoformat(),
+                            'modified': datetime.fromtimestamp(file_stats.st_mtime).isoformat()
+                        })
+        
+        # Sort by creation time (newest first)
+        extractions.sort(key=lambda x: x['created'], reverse=True)
+        
+        return jsonify({
+            'success': True,
+            'extractions': extractions,
+            'count': len(extractions)
+        })
+        
+    except Exception as e:
+        logger.error(f"Error listing extractions: {e}")
         return jsonify({
             'success': False,
             'error': str(e)
