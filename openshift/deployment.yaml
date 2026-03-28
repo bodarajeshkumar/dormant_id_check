@@ -18,7 +18,7 @@ spec:
     spec:
       containers:
       - name: cloudant-extractor
-        image: cloudant-extractor:latest
+        image: image-registry.openshift-image-registry.svc:5000/cloudant-extractor/cloudant-extractor:latest
         imagePullPolicy: Always
         ports:
         - containerPort: 8080
