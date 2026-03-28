@@ -60,12 +60,6 @@ spec:
         volumeMounts:
         - name: extraction-data
           mountPath: /app/backend/extractions
-        - name: status-data
-          mountPath: /app/status.json
-          subPath: status.json
-        - name: history-data
-          mountPath: /app/extraction_history.json
-          subPath: extraction_history.json
         livenessProbe:
           httpGet:
             path: /api/health
@@ -84,13 +78,6 @@ spec:
           failureThreshold: 3
       volumes:
       - name: extraction-data
-        persistentVolumeClaim:
-          claimName: cloudant-extraction-data
-      - name: status-data
-        persistentVolumeClaim:
-          claimName: cloudant-status-data
-      - name: history-data
-        persistentVolumeClaim:
-          claimName: cloudant-history-data
+        emptyDir: {}
 
 # Made with Bob
