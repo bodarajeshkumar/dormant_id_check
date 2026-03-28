@@ -34,12 +34,12 @@ FROM registry.access.redhat.com/ubi9/python-311:latest
 USER 0
 
 # Install system dependencies including nginx for serving frontend
-RUN microdnf install -y \
+RUN dnf install -y \
     gcc \
     nginx \
     supervisor \
     curl \
-    && microdnf clean all
+    && dnf clean all
 
 # Set working directory
 WORKDIR /app
