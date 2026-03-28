@@ -30,13 +30,16 @@ RUN npm run build
 # Stage 2: Final image with Python backend and built frontend
 FROM registry.access.redhat.com/ubi9/python-311:latest
 
+# Run as root to install packages
+USER 0
+
 # Install system dependencies including nginx for serving frontend
-RUN apt-get update && apt-get install -y \
+RUN microdnf install -y \
     gcc \
     nginx \
     supervisor \
     curl \
-    && rm -rf /var/lib/apt/lists/*
+    && microdnf clean all
 
 # Set working directory
 WORKDIR /app
