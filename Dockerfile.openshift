@@ -2,7 +2,7 @@
 # Runs on non-privileged port 8080 instead of port 80
 
 # Stage 1: Build React frontend
-FROM quay.io/nodejs/node:18-alpine AS frontend-builder
+FROM registry.access.redhat.com/ubi9/nodejs-18:latest AS frontend-builder
 
 WORKDIR /frontend
 
