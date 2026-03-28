@@ -34,11 +34,9 @@ FROM registry.access.redhat.com/ubi9/python-311:latest
 USER 0
 
 # Install system dependencies including nginx for serving frontend
-# Enable EPEL for nginx, install supervisor via pip
+# Note: curl-minimal is already installed, gcc is pre-installed
 RUN dnf install -y \
-    gcc \
     nginx \
-    curl \
     python3-pip \
     && dnf clean all && \
     pip install supervisor
