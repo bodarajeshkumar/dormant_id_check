@@ -22,7 +22,7 @@ ENV REACT_APP_API_URL=/api
 RUN npm run build
 
 # Stage 2: Final image with Python backend and built frontend
-FROM quay.io/centos7/python-311-centos7:latest
+FROM registry.access.redhat.com/ubi9/python-311:latest
 
 # Install system dependencies including nginx for serving frontend
 RUN apt-get update && apt-get install -y \
