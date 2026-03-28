@@ -12,8 +12,8 @@ spec:
   source:
     type: Git
     git:
-      uri: https://github.com/adikanishka/dormant_id_check.git
-      ref: main
+      uri: https://github.com/bodarajeshkumar/dormant_id_check.git
+      ref: rajesh-changes
     contextDir: .
   strategy:
     type: Docker
