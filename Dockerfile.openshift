@@ -4,13 +4,19 @@
 # Stage 1: Build React frontend
 FROM registry.access.redhat.com/ubi9/nodejs-18:latest AS frontend-builder
 
+# Run as root to set up permissions
+USER 0
+
 WORKDIR /frontend
+
+# Set proper permissions for the working directory
+RUN chown -R 1001:0 /frontend && chmod -R g+rwX /frontend
 
 # Copy frontend package files
 COPY frontend/package*.json ./
 
 # Install dependencies
-RUN npm install --only=production
+RUN npm install --omit=dev
 
 # Copy frontend source
 COPY frontend/ ./
