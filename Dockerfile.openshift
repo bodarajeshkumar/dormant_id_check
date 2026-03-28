@@ -103,9 +103,8 @@ RUN echo 'server {\n\
 RUN sed -i 's/user nginx;/user 1001;/g' /etc/nginx/nginx.conf || true && \
     sed -i 's/pid \/var\/run\/nginx.pid;/pid \/var\/run\/nginx.pid;/g' /etc/nginx/nginx.conf
 
-# Create supervisor configuration directory and file
-RUN mkdir -p /etc/supervisor/conf.d && \
-    echo '[supervisord]\n\
+# Create supervisor configuration file
+RUN echo '[supervisord]\n\
 nodaemon=true\n\
 logfile=/var/log/supervisor/supervisord.log\n\
 pidfile=/var/run/supervisord.pid\n\
@@ -125,7 +124,7 @@ autostart=true\n\
 autorestart=true\n\
 stdout_logfile=/var/log/supervisor/flask.log\n\
 stderr_logfile=/var/log/supervisor/flask_err.log\n\
-environment=PYTHONUNBUFFERED=1\n' > /etc/supervisor/conf.d/supervisord.conf
+environment=PYTHONUNBUFFERED=1\n' > /etc/supervisord.conf
 
 # Expose port 8080 for nginx (OpenShift compatible)
 EXPOSE 8080
@@ -151,4 +150,4 @@ RUN chgrp -R 0 /app && \
 
 # Start supervisor to manage both nginx and flask
 # Use shell form to allow PATH resolution
-CMD supervisord -c /etc/supervisor/conf.d/supervisord.conf
+CMD supervisord -c /etc/supervisord.conf
