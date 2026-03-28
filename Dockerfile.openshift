@@ -39,7 +39,8 @@ RUN dnf install -y \
     nginx \
     python3-pip \
     && dnf clean all && \
-    pip install supervisor
+    pip install supervisor && \
+    which supervisord
 
 # Set working directory
 WORKDIR /app
@@ -149,4 +150,5 @@ RUN chgrp -R 0 /app && \
     chmod -R g=u /usr/share/nginx/html
 
 # Start supervisor to manage both nginx and flask
-CMD ["/usr/local/bin/supervisord", "-c", "/etc/supervisor/conf.d/supervisord.conf"]
+# Use shell form to allow PATH resolution
+CMD supervisord -c /etc/supervisor/conf.d/supervisord.conf
