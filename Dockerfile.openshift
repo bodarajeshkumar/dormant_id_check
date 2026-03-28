@@ -34,12 +34,14 @@ FROM registry.access.redhat.com/ubi9/python-311:latest
 USER 0
 
 # Install system dependencies including nginx for serving frontend
+# Enable EPEL for nginx, install supervisor via pip
 RUN dnf install -y \
     gcc \
     nginx \
-    supervisor \
     curl \
-    && dnf clean all
+    python3-pip \
+    && dnf clean all && \
+    pip install supervisor
 
 # Set working directory
 WORKDIR /app
