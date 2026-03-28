@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  cloudant-extractor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: cloudant-extractor
+    ports:
+      - "8080:80"
+    environment:
+      # Cloudant credentials - REQUIRED
+      - CLOUDANT_USERNAME=${CLOUDANT_USERNAME}
+      - CLOUDANT_PASSWORD=${CLOUDANT_PASSWORD}
+      - CLOUDANT_URL=${CLOUDANT_URL}
+      
+      # Optional configuration
+      - BATCH_SIZE=${BATCH_SIZE:-1000}
+      - START_YEAR=${START_YEAR:-2024}
+      - START_MONTH=${START_MONTH:-1}
+      - END_YEAR=${END_YEAR:-2026}
+      - END_MONTH=${END_MONTH:-12}
+    volumes:
+      # Persist extraction data
+      - extraction-data:/app/backend/extractions
+      # Persist status and history
+      - ./status.json:/app/status.json
+      - ./extraction_history.json:/app/extraction_history.json
+      # Mount .env file if it exists
+      - ./.env:/app/.env:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  extraction-data:
+    driver: local
+
+# Made with Bob

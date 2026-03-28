@@ -1,0 +1,96 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: cloudant-extractor
+  labels:
+    app: cloudant-extractor
+    app.kubernetes.io/name: cloudant-extractor
+    app.kubernetes.io/component: web
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: cloudant-extractor
+  template:
+    metadata:
+      labels:
+        app: cloudant-extractor
+    spec:
+      containers:
+      - name: cloudant-extractor
+        image: cloudant-extractor:latest
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          protocol: TCP
+          name: http
+        env:
+        - name: CLOUDANT_USERNAME
+          valueFrom:
+            secretKeyRef:
+              name: cloudant-credentials
+              key: username
+        - name: CLOUDANT_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: cloudant-credentials
+              key: password
+        - name: CLOUDANT_URL
+          valueFrom:
+            secretKeyRef:
+              name: cloudant-credentials
+              key: url
+        - name: BATCH_SIZE
+          value: "1000"
+        - name: START_YEAR
+          value: "2024"
+        - name: START_MONTH
+          value: "1"
+        - name: END_YEAR
+          value: "2026"
+        - name: END_MONTH
+          value: "12"
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "2Gi"
+            cpu: "1000m"
+        volumeMounts:
+        - name: extraction-data
+          mountPath: /app/backend/extractions
+        - name: status-data
+          mountPath: /app/status.json
+          subPath: status.json
+        - name: history-data
+          mountPath: /app/extraction_history.json
+          subPath: extraction_history.json
+        livenessProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/health
+            port: 8080
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+      volumes:
+      - name: extraction-data
+        persistentVolumeClaim:
+          claimName: cloudant-extraction-data
+      - name: status-data
+        persistentVolumeClaim:
+          claimName: cloudant-status-data
+      - name: history-data
+        persistentVolumeClaim:
+          claimName: cloudant-history-data
+
+# Made with Bob

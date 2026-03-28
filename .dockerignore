@@ -1,0 +1,66 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+*.log
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# Documentation
+*.md
+!README.md
+
+# Extraction data (large files)
+backend/extractions/*.json
+backend/backend/extractions/*.json
+
+# Status files
+status.json
+extraction_history.json
+
+# Frontend build (will be built in container)
+frontend/build/
+
+# Test files
+*.test.js
+*.spec.js
+test/
+tests/
+
+# Docker
+Dockerfile
+.dockerignore
+docker-compose.yml
+podman-compose.yml
