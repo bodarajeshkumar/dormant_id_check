@@ -102,8 +102,9 @@ RUN echo 'server {\n\
 RUN sed -i 's/user nginx;/user 1001;/g' /etc/nginx/nginx.conf || true && \
     sed -i 's/pid \/var\/run\/nginx.pid;/pid \/var\/run\/nginx.pid;/g' /etc/nginx/nginx.conf
 
-# Create supervisor configuration
-RUN echo '[supervisord]\n\
+# Create supervisor configuration directory and file
+RUN mkdir -p /etc/supervisor/conf.d && \
+    echo '[supervisord]\n\
 nodaemon=true\n\
 logfile=/var/log/supervisor/supervisord.log\n\
 pidfile=/var/run/supervisord.pid\n\
