@@ -108,7 +108,6 @@ RUN printf '[supervisord]\n\
 nodaemon=true\n\
 logfile=/var/log/supervisor/supervisord.log\n\
 pidfile=/var/run/supervisord.pid\n\
-user=root\n\
 \n\
 [program:nginx]\n\
 command=/usr/sbin/nginx -g "daemon off;"\n\
