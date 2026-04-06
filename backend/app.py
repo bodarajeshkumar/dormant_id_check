@@ -12,10 +12,13 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from dotenv import load_dotenv
 import sys
+import subprocess
 
 # Add parent directory to path to import cloudant_extractor
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from cloudant_extractor_async import CloudantExtractorAsync
+from backend import user_filters
+from backend import validators
 from backend.filters import FilterManager
 import asyncio
 
@@ -133,6 +136,7 @@ class ExtractorWrapper:
         self.filter_config = filter_config or {}
         self.filter_manager = None
         self.batch_size = batch_size
+        self.stop_requested = False
         
     def calculate_total_months(self):
         """Calculate total months in date range"""
@@ -167,14 +171,15 @@ class ExtractorWrapper:
         
         # Create output filename with timestamp
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_filename = f"extraction_{timestamp}.json"
-        output_path = os.path.join('backend', 'extractions', output_filename)
+        self.output_filename = f"extraction_{timestamp}.json"
+        output_path = os.path.join('backend', 'extractions', self.output_filename)
         
         # Create extractions directory if it doesn't exist
         os.makedirs(os.path.join('backend', 'extractions'), exist_ok=True)
         
         # Initialize output file
         self.output_file = output_path
+        self.output_path = output_path  # Store for later use
         self.extracted_data = []
         
         try:
@@ -210,7 +215,7 @@ class ExtractorWrapper:
                 'current_month': f"{start.year}-{start.month:02d}",
                 'error': None,
                 'start_time': start_time,
-                'output_file': output_filename,
+                'output_file': self.output_filename,
                 'filters': self.filter_config
             })
             
@@ -218,6 +223,11 @@ class ExtractorWrapper:
             self.filter_manager = FilterManager(self.filter_config)
             logger.info(f"Filter configuration: {self.filter_config}")
             logger.info(f"Enabled filters: {self.filter_manager.get_stats()['enabled_filters']}")
+            
+            # Check if stop was requested before initialization
+            if self.stop_requested:
+                logger.warning("Stop requested before extractor initialization")
+                raise InterruptedError("Extraction stopped by user before starting")
             
             # Initialize extractor
             username = os.getenv('CLOUDANT_USERNAME')
@@ -237,44 +247,35 @@ class ExtractorWrapper:
                 total_months=total_months
             )
             
+            # Check again after initialization
+            if self.stop_requested:
+                logger.warning("Stop requested after extractor initialization")
+                self.extractor.request_stop()
+            
             # Create session and run extraction
             await self.extractor.create_session()
             
-            # Run extraction
+            # Run extraction with full date/time range
             await self.extractor.extract_date_range(
                 start_year=start.year,
                 start_month=start.month,
                 end_year=end.year,
-                end_month=end.month
+                end_month=end.month,
+                start_day=start.day,
+                start_hour=start.hour,
+                start_minute=start.minute,
+                end_day=end.day,
+                end_hour=end.hour,
+                end_minute=end.minute
             )
             
             # Calculate duration
             end_time = time.time()
             duration_seconds = int(end_time - start_time)
             
-            # Mark as finished
-            StatusManager.update_status({
-                'status': 'finished',
-                'progress_percent': 100,
-                'error': None,
-                'duration_seconds': duration_seconds,
-                'filters': self.filter_config
-            })
-            
-            # Add to history
-            HistoryManager.add_history_entry({
-                'id': datetime.now().strftime('%Y%m%d_%H%M%S'),
-                'start_date': self.start_date,
-                'end_date': self.end_date,
-                'records_processed': self.extractor.total_records_processed if self.extractor else 0,
-                'months_processed': self.extractor.months_processed if self.extractor else 0,
-                'status': 'completed',
-                'error': None,
-                'timestamp': datetime.now().isoformat(),
-                'duration_seconds': duration_seconds,
-                'filename': output_filename,
-                'filters': self.filter_config
-            })
+            # Store duration for later use
+            self.duration_seconds = duration_seconds
+            self.extraction_successful = True
             
         except InterruptedError as e:
             # Handle user-requested stop
@@ -300,11 +301,11 @@ class ExtractorWrapper:
                 'error': 'Stopped by user',
                 'timestamp': datetime.now().isoformat(),
                 'duration_seconds': duration_seconds,
-                'filename': output_filename if hasattr(self, 'output_file') else None,
+                'filename': self.output_filename,
                 'filters': self.filter_config
             })
             
-            print(f"Extraction stopped by user")
+            logger.info("Extraction stopped by user")
             
         except Exception as e:
             # Calculate duration even for failed jobs
@@ -341,8 +342,47 @@ class ExtractorWrapper:
             if hasattr(self, 'output_file') and hasattr(self, 'extracted_data'):
                 self.finalize_output_file()
             
+            # Run validation pipeline AFTER file is finalized
+            logger.info(f"Finally block: extraction_successful={hasattr(self, 'extraction_successful')}, value={getattr(self, 'extraction_successful', None)}")
+            if hasattr(self, 'extraction_successful') and self.extraction_successful:
+                logger.info("Running validation pipeline...")
+                await self._run_validation_pipeline(self.output_path)
+                
+                # Mark as finished (successful completion)
+                logger.info("Updating status to finished...")
+                StatusManager.update_status({
+                    'status': 'finished',
+                    'error': None,
+                    'duration_seconds': self.duration_seconds,
+                    'filters': self.filter_config
+                })
+                
+                # Add to history
+                logger.info("Adding to history...")
+                HistoryManager.add_history_entry({
+                    'id': datetime.now().strftime('%Y%m%d_%H%M%S'),
+                    'start_date': self.start_date,
+                    'end_date': self.end_date,
+                    'records_processed': self.extractor.total_records_processed if self.extractor else 0,
+                    'months_processed': self.extractor.months_processed if self.extractor else 0,
+                    'status': 'completed',
+                    'error': None,
+                    'timestamp': datetime.now().isoformat(),
+                    'duration_seconds': self.duration_seconds,
+                    'filename': self.output_filename,
+                    'filters': self.filter_config
+                })
+                logger.info("Status update and history entry complete!")
+            
             if self.extractor:
                 await self.extractor.close()
+            
+            # Clear the global current_extractor reference
+            global current_extractor
+            with current_extractor_lock:
+                if current_extractor == self:
+                    current_extractor = None
+                    logger.info("Cleared current_extractor reference")
     
     def store_batch_data(self, batch):
         """Store batch data to file incrementally with date and plugin filtering"""
@@ -377,14 +417,7 @@ class ExtractorWrapper:
                         record_datetime = datetime(key[1], key[2], key[3], key[4], key[5], key[6])
                         # Only include if within datetime range
                         if start <= record_datetime <= end:
-                            # Apply plugin filters if filter manager is available
-                            if self.filter_manager:
-                                if self.filter_manager.filter_record(record):
-                                    filtered_batch.append(record)
-                                else:
-                                    plugin_filtered_out += 1
-                            else:
-                                filtered_batch.append(record)
+                            filtered_batch.append(record)
                         else:
                             date_filtered_out += 1
                             logger.debug(f"Filtered out record with datetime {record_datetime} (outside range {start} to {end})")
@@ -463,6 +496,135 @@ class ExtractorWrapper:
             'progress_percent': progress_percent
         })
 
+    async def _run_resolution(self, extraction_file: str) -> str:
+        """Run IBM user resolution on extraction output, return resolved file path"""
+        try:
+            from ibm_users_resolution_async import IBMUsersResolverAsync
+
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_dir = os.path.join('backend', 'resolutions')
+            os.makedirs(output_dir, exist_ok=True)
+            resolved_file = os.path.join(output_dir, f'resolved_users_{timestamp}.json')
+            failed_file = os.path.join(output_dir, f'failed_ids_{timestamp}.json')
+
+            resolver = IBMUsersResolverAsync(
+                batch_size=int(os.getenv('RESOLUTION_BATCH_SIZE', '100')),
+                max_concurrent=int(os.getenv('MAX_CONCURRENT', '1'))
+            )
+
+            user_ids = resolver.extract_user_ids(extraction_file)
+            if not user_ids:
+                logger.warning("No user IDs found in extraction file, skipping resolution")
+                return None
+
+            results = await resolver.resolve_all(user_ids, resume=False)
+            resolver.save_results(results, resolved_file)
+            resolver.save_failed_ids(user_ids, set(results.keys()), failed_file)
+            resolver.print_statistics()
+
+            logger.info(f"Resolution complete: {resolved_file}")
+            return resolved_file
+
+        except Exception as e:
+            logger.error(f"Resolution pipeline error: {e}", exc_info=True)
+            return None
+
+    def _filter_ibm_emails(self, resolved_file: str) -> str:
+        """Filter resolved users to only @ibm.com emails, return filtered file path"""
+        try:
+            with open(resolved_file, 'r') as f:
+                users = json.load(f)
+
+            ibm_users = [u for u in users if u.get('email', '').endswith('@ibm.com')]
+            filtered_out = len(users) - len(ibm_users)
+
+            logger.info(f"Email filter: {len(ibm_users)} @ibm.com kept, {filtered_out} non-IBM removed")
+
+            # Save filtered file alongside resolved file
+            filtered_file = resolved_file.replace('resolved_users_', 'ibm_only_')
+            with open(filtered_file, 'w') as f:
+                json.dump(ibm_users, f, indent=2)
+
+            logger.info(f"Filtered file saved: {filtered_file}")
+            return filtered_file
+
+        except Exception as e:
+            logger.error(f"Email filter error: {e}", exc_info=True)
+            return None
+
+    async def _run_bluepages(self, filtered_file: str):
+        """Run Bluepages validation on filtered @ibm.com users"""
+        try:
+            from bluepages_validator_async import validate_users_async
+
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            output_dir = os.path.join('backend', 'resolutions')
+            to_delete_file = os.path.join(output_dir, f'to_be_deleted_{timestamp}.json')
+            not_to_delete_file = os.path.join(output_dir, f'not_to_delete_{timestamp}.json')
+
+            await validate_users_async(
+                input_file=filtered_file,
+                to_delete_file=to_delete_file,
+                not_to_delete_file=not_to_delete_file,
+                resume=False,
+                max_concurrent=int(os.getenv('BLUEPAGES_CONCURRENT', '50')),
+                batch_size=int(os.getenv('BLUEPAGES_BATCH_SIZE', '100'))
+            )
+
+            logger.info(f"Bluepages validation complete. To delete: {to_delete_file}")
+
+        except Exception as e:
+            logger.error(f"Bluepages pipeline error: {e}", exc_info=True)
+    async def _run_validation_pipeline(self, extraction_file: str):
+        """
+        Run validation pipeline based on filter configuration from UI checkboxes.
+        Maps UI filter names to validation checks.
+        """
+        try:
+            # Map filter IDs to validation checks
+            # UI sends filters like: {"isv_validation": true, "dormancy_check": true, ...}
+            checks = {}
+            
+            if self.filter_config.get('isv_validation'):
+                checks['isv_validation'] = True
+                checks['active_status'] = True  # Always check active status after ISV
+            
+            if self.filter_config.get('dormancy_check'):
+                checks['last_login'] = True
+                checks['bluepages'] = True  # Always run BluPages after login check
+            
+            # If no checks selected, skip validation
+            if not checks:
+                logger.info("No validation checks selected, skipping validation pipeline")
+                return
+            
+            # Update status
+            StatusManager.update_status({'status': 'validating', 'error': None})
+            logger.info(f"Starting validation pipeline with checks: {list(checks.keys())}")
+            
+            # Run the validation pipeline
+            output_dir = os.path.join('backend', 'resolutions')
+            os.makedirs(output_dir, exist_ok=True)
+            
+            result = await validators.run_validation_pipeline(
+                input_file=extraction_file,
+                output_dir=output_dir,
+                checks=checks,
+                days_threshold=1065,  # 3 years
+                max_concurrent=int(os.getenv('MAX_CONCURRENT', '50')),
+                batch_size=int(os.getenv('RESOLUTION_BATCH_SIZE', '100'))
+            )
+            
+            if result.get('success'):
+                logger.info(f"Validation pipeline completed successfully")
+                logger.info(f"Summary: {result.get('summary', {})}")
+            else:
+                logger.error(f"Validation pipeline failed: {result.get('error')}")
+                
+        except Exception as e:
+            logger.error(f"Validation pipeline error: {e}", exc_info=True)
+
+
 
 class CloudantExtractorWithCallback(CloudantExtractorAsync):
     """Extended CloudantExtractorAsync with progress callbacks and data storage"""
@@ -473,7 +635,9 @@ class CloudantExtractorWithCallback(CloudantExtractorAsync):
         self.data_storage_callback = data_storage_callback
         self.total_months_expected = total_months
     
-    async def extract_year(self, year, start_month=1, end_month=12):
+    async def extract_year(self, year, start_month=1, end_month=12,
+                           start_day=1, start_hour=0, start_minute=0,
+                           end_day=None, end_hour=23, end_minute=59):
         """Override to add progress tracking (async)"""
         logger.info(f"=" * 80)
         logger.info(f"Starting extraction for year {year}")
@@ -488,7 +652,15 @@ class CloudantExtractorWithCallback(CloudantExtractorAsync):
             
             try:
                 # Process month data in batches (async)
-                async for batch in self._extract_month_data(year, month):
+                async for batch in self._extract_month_data(
+                    year, month,
+                    start_day=start_day if month == start_month else 1,
+                    start_hour=start_hour if month == start_month else 0,
+                    start_minute=start_minute if month == start_month else 0,
+                    end_day=end_day if month == end_month else None,
+                    end_hour=end_hour if month == end_month else 23,
+                    end_minute=end_minute if month == end_month else 59
+                ):
                     # Store data if callback provided
                     if self.data_storage_callback:
                         self.data_storage_callback(batch)
@@ -706,20 +878,38 @@ def stop_extraction():
     try:
         global current_extractor
         
+        # Check if there's actually a job running by checking status
+        current_status = StatusManager.load_status()
+        if current_status.get('status') != 'under_processing':
+            return jsonify({
+                'success': False,
+                'error': 'No extraction is currently running (status check)'
+            }), 400
+        
         with current_extractor_lock:
             if current_extractor is None:
+                # Status says running but no extractor reference
+                # This can happen after server reload - update status to stopped
+                logger.warning("Extraction running but no extractor reference (likely after server reload)")
+                StatusManager.update_status({
+                    'status': 'stopped',
+                    'error': 'Stopped (server reloaded during extraction)'
+                })
                 return jsonify({
-                    'success': False,
-                    'error': 'No extraction is currently running'
-                }), 400
+                    'success': True,
+                    'message': 'Extraction marked as stopped (server was reloaded)'
+                })
             
             if current_extractor.extractor is None:
+                # Extractor not initialized yet, but we can still set the stop flag
+                logger.warning("Extractor not initialized yet, setting stop flag on wrapper")
+                current_extractor.stop_requested = True
                 return jsonify({
-                    'success': False,
-                    'error': 'Extractor not initialized yet'
-                }), 400
+                    'success': True,
+                    'message': 'Stop requested. Extraction will stop before starting.'
+                })
             
-            # Request stop
+            # Request stop on the extractor
             current_extractor.extractor.request_stop()
         
         return jsonify({
@@ -898,6 +1088,408 @@ def get_history():
         'history': history,
         'count': len(history)
     })
+
+# ============================================================================
+# User Filtering API Endpoints
+# ============================================================================
+
+@app.route('/api/users/split-by-status', methods=['POST'])
+def split_users_by_status():
+    """
+    Split users into active and inactive files.
+    
+    Request body:
+    {
+        "input_file": "backend/resolutions/resolved_users_20260403_155345.json",
+        "output_dir": "backend/resolutions"  // optional
+    }
+    """
+    try:
+        data = request.get_json()
+        input_file = data.get('input_file')
+        output_dir = data.get('output_dir', 'backend/resolutions')
+        
+        if not input_file:
+            return jsonify({'error': 'input_file is required'}), 400
+        
+        # Call the pluggable function
+        active_file, inactive_file, active_count, inactive_count = user_filters.split_by_active_status(
+            input_file, output_dir
+        )
+        
+        return jsonify({
+            'success': True,
+            'files': {
+                'active': active_file,
+                'inactive': inactive_file
+            },
+            'counts': {
+                'active': active_count,
+                'inactive': inactive_count
+            }
+        })
+        
+    except user_filters.UserFilterError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+
+
+@app.route('/api/users/filter-by-login', methods=['POST'])
+def filter_users_by_login():
+    """
+    Filter users by last login date.
+    
+    Request body:
+    {
+        "input_file": "backend/resolutions/isv_active_users_20260403_160408.json",
+        "days_threshold": 1095,  // optional, default 1095 (3 years)
+        "output_dir": "backend/resolutions",  // optional
+        "append_recent": true  // optional, default true
+    }
+    """
+    try:
+        data = request.get_json()
+        input_file = data.get('input_file')
+        days_threshold = data.get('days_threshold', 1095)
+        output_dir = data.get('output_dir', 'backend/resolutions')
+        append_recent = data.get('append_recent', True)
+        
+        if not input_file:
+            return jsonify({'error': 'input_file is required'}), 400
+        
+        # Call the pluggable function
+        old_file, recent_file, old_count, recent_count = user_filters.filter_by_login_date(
+            input_file, days_threshold, output_dir, append_recent=append_recent
+        )
+        
+        return jsonify({
+            'success': True,
+            'files': {
+                'old_login': old_file,
+                'recent_login': recent_file
+            },
+            'counts': {
+                'old_login': old_count,
+                'recent_login': recent_count
+            },
+            'threshold_days': days_threshold
+        })
+        
+    except user_filters.UserFilterError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+
+
+@app.route('/api/users/process-pipeline', methods=['POST'])
+def process_user_pipeline():
+    """
+    Run complete user processing pipeline:
+    1. Split by active/inactive
+    2. Filter active users by login date
+    
+    Request body:
+    {
+        "input_file": "backend/resolutions/resolved_users_20260403_155345.json",
+        "days_threshold": 1095,  // optional, default 1095 (3 years)
+        "output_dir": "backend/resolutions"  // optional
+    }
+    """
+    try:
+        data = request.get_json()
+        input_file = data.get('input_file')
+        days_threshold = data.get('days_threshold', 1095)
+        output_dir = data.get('output_dir', 'backend/resolutions')
+        
+        if not input_file:
+            return jsonify({'error': 'input_file is required'}), 400
+        
+        # Call the pluggable pipeline function
+        result = user_filters.process_user_pipeline(
+            input_file, output_dir, days_threshold
+        )
+        
+        return jsonify({
+            'success': True,
+            **result
+        })
+        
+    except user_filters.UserFilterError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+
+
+@app.route('/api/users/statistics', methods=['POST'])
+def get_user_statistics():
+    """
+    Get statistics for a user file.
+    
+    Request body:
+    {
+        "file_path": "backend/resolutions/resolved_users_20260403_155345.json"
+    }
+    """
+    try:
+        data = request.get_json()
+        file_path = data.get('file_path')
+        
+        if not file_path:
+            return jsonify({'error': 'file_path is required'}), 400
+        
+        # Load users and get statistics
+        users = user_filters.load_users_from_file(file_path)
+        stats = user_filters.get_user_statistics(users)
+        
+        return jsonify({
+            'success': True,
+            'file': file_path,
+            'statistics': stats
+        })
+        
+    except user_filters.UserFilterError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+
+
+@app.route('/api/users/list-files', methods=['GET'])
+def list_user_files():
+    """
+    List all resolution files with metadata.
+    
+    Query params:
+    - resolution_dir: optional, default "backend/resolutions"
+    """
+    try:
+        resolution_dir = request.args.get('resolution_dir', 'backend/resolutions')
+        
+        files = user_filters.list_resolution_files(resolution_dir)
+        
+        return jsonify({
+            'success': True,
+            'files': files,
+            'count': len(files)
+        })
+        
+    except Exception as e:
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+
+
+# ============================================================================
+# Validation Pipeline API Endpoints
+# ============================================================================
+
+@app.route('/api/validate/isv', methods=['POST'])
+async def validate_isv_endpoint():
+    """
+    Validate users against ISV (IBM Users API).
+    
+    Request body:
+    {
+        "input_file": "backend/backend/extractions/extraction_*.json",
+        "output_dir": "backend/resolutions",
+        "batch_size": 100,
+        "max_concurrent": 50
+    }
+    """
+    try:
+        data = request.get_json()
+        input_file = data.get('input_file')
+        output_dir = data.get('output_dir', 'backend/resolutions')
+        batch_size = data.get('batch_size', 100)
+        max_concurrent = data.get('max_concurrent', 50)
+        
+        if not input_file:
+            return jsonify({'error': 'input_file is required'}), 400
+        
+        # Call the pluggable validator
+        result = await validators.validate_isv(
+            input_file=input_file,
+            output_dir=output_dir,
+            batch_size=batch_size,
+            max_concurrent=max_concurrent
+        )
+        
+        return jsonify(result)
+        
+    except validators.ISVValidationError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+
+
+@app.route('/api/validate/active-status', methods=['POST'])
+def validate_active_status_endpoint():
+    """
+    Split users by active/inactive status.
+    
+    Request body:
+    {
+        "input_file": "backend/resolutions/isv_resolved_users_*.json",
+        "output_dir": "backend/resolutions",
+        "timestamp": "20260406_100000"
+    }
+    """
+    try:
+        data = request.get_json()
+        input_file = data.get('input_file')
+        output_dir = data.get('output_dir', 'backend/resolutions')
+        timestamp = data.get('timestamp')
+        
+        if not input_file:
+            return jsonify({'error': 'input_file is required'}), 400
+        
+        # Call the pluggable validator
+        result = validators.validate_active_status(
+            input_file=input_file,
+            output_dir=output_dir,
+            timestamp=timestamp
+        )
+        
+        return jsonify(result)
+        
+    except validators.ActiveStatusError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+
+
+@app.route('/api/validate/last-login', methods=['POST'])
+def validate_last_login_endpoint():
+    """
+    Filter users by last login date.
+    
+    Request body:
+    {
+        "input_file": "backend/resolutions/isv_active_users_*.json",
+        "days_threshold": 1065,
+        "output_dir": "backend/resolutions",
+        "timestamp": "20260406_100000",
+        "append_recent": true
+    }
+    """
+    try:
+        data = request.get_json()
+        input_file = data.get('input_file')
+        days_threshold = data.get('days_threshold', 1065)
+        output_dir = data.get('output_dir', 'backend/resolutions')
+        timestamp = data.get('timestamp')
+        append_recent = data.get('append_recent', True)
+        
+        if not input_file:
+            return jsonify({'error': 'input_file is required'}), 400
+        
+        # Call the pluggable validator
+        result = validators.validate_last_login(
+            input_file=input_file,
+            days_threshold=days_threshold,
+            output_dir=output_dir,
+            timestamp=timestamp,
+            append_recent=append_recent
+        )
+        
+        return jsonify(result)
+        
+    except validators.LoginValidationError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+
+
+@app.route('/api/validate/bluepages', methods=['POST'])
+async def validate_bluepages_endpoint():
+    """
+    Validate users against IBM BluPages.
+    
+    Request body:
+    {
+        "input_file": "backend/resolutions/isv_last_login_>3_*.json",
+        "output_dir": "backend/resolutions",
+        "timestamp": "20260406_100000",
+        "max_concurrent": 50,
+        "batch_size": 100
+    }
+    """
+    try:
+        data = request.get_json()
+        input_file = data.get('input_file')
+        output_dir = data.get('output_dir', 'backend/resolutions')
+        timestamp = data.get('timestamp')
+        max_concurrent = data.get('max_concurrent', 50)
+        batch_size = data.get('batch_size', 100)
+        
+        if not input_file:
+            return jsonify({'error': 'input_file is required'}), 400
+        
+        # Call the pluggable validator
+        result = await validators.validate_bluepages(
+            input_file=input_file,
+            output_dir=output_dir,
+            timestamp=timestamp,
+            max_concurrent=max_concurrent,
+            batch_size=batch_size
+        )
+        
+        return jsonify(result)
+        
+    except validators.BluePagesError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+
+
+@app.route('/api/validate/pipeline', methods=['POST'])
+async def validate_pipeline_endpoint():
+    """
+    Run complete validation pipeline with selected checks.
+    
+    Request body:
+    {
+        "input_file": "backend/backend/extractions/extraction_*.json",
+        "output_dir": "backend/resolutions",
+        "checks": {
+            "isv_validation": true,
+            "active_status": true,
+            "last_login": true,
+            "bluepages": true
+        },
+        "days_threshold": 1065,
+        "max_concurrent": 50,
+        "batch_size": 100
+    }
+    """
+    try:
+        data = request.get_json()
+        input_file = data.get('input_file')
+        output_dir = data.get('output_dir', 'backend/resolutions')
+        checks = data.get('checks')
+        days_threshold = data.get('days_threshold', 1065)
+        max_concurrent = data.get('max_concurrent', 50)
+        batch_size = data.get('batch_size', 100)
+        
+        if not input_file:
+            return jsonify({'error': 'input_file is required'}), 400
+        
+        # Call the pluggable pipeline
+        result = await validators.run_validation_pipeline(
+            input_file=input_file,
+            output_dir=output_dir,
+            checks=checks,
+            days_threshold=days_threshold,
+            max_concurrent=max_concurrent,
+            batch_size=batch_size
+        )
+        
+        return jsonify(result)
+        
+    except validators.PipelineError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        return jsonify({'error': f'Unexpected error: {str(e)}'}), 500
+
+
 
 
 @app.route('/api/health', methods=['GET'])

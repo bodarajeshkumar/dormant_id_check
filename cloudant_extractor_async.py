@@ -150,8 +150,8 @@ class CloudantExtractorAsync:
         Returns:
             Tuple of (rows, has_more) where has_more indicates if more data exists
         """
-        limit = self.batch_size + 1 if startkey_docid else self.batch_size
-        limit += 1  # Always fetch one extra to check if more data exists
+        # Request batch_size records (Cloudant has a hard limit of ~3000)
+        limit = self.batch_size
         
         params = self._build_query_params(
             startkey=startkey,
@@ -160,6 +160,8 @@ class CloudantExtractorAsync:
             limit=limit
         )
         
+        logger.debug(f"Fetching batch with params: startkey={startkey}, endkey={endkey}, startkey_docid={startkey_docid}, limit={limit}")
+        
         for attempt in range(self.max_retries):
             try:
                 async with self.session.get(self.base_url, params=params) as response:
@@ -167,17 +169,20 @@ class CloudantExtractorAsync:
                     data = await response.json()
                     rows = data.get('rows', [])
                     
+                    logger.debug(f"Received {len(rows)} rows from API")
+                    
+                    # Check if there are more records BEFORE skipping duplicates
+                    # If we got exactly batch_size rows from API, there might be more
+                    has_more = len(rows) == self.batch_size
+                    
                     # When using startkey_docid, skip the first document to avoid duplicates
                     if startkey_docid and rows and rows[0].get('id') == startkey_docid:
+                        logger.debug(f"Skipping duplicate document: {startkey_docid}")
                         rows = rows[1:]
                     
-                    # Check if there are more records
-                    has_more = len(rows) > self.batch_size
+                    logger.debug(f"After processing: {len(rows)} rows, has_more={has_more}")
                     
-                    # If we fetched extra, remove it
-                    if has_more:
-                        rows = rows[:self.batch_size]
-                    
+                    logger.info(f"Batch fetch complete: {len(rows)} rows returned, has_more={has_more}")
                     return rows, has_more
                     
             except (aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -220,18 +225,25 @@ class CloudantExtractorAsync:
     async def _extract_month_data(
         self,
         year: int,
-        month: int
+        month: int,
+        start_day: int = 1,
+        start_hour: int = 0,
+        start_minute: int = 0,
+        end_day: int = None,
+        end_hour: int = 23,
+        end_minute: int = 59
     ) -> AsyncGenerator[List[Dict], None]:
         """
-        Extract all data for a specific month using key-based pagination (async).
+        Extract data for a specific date/time range within a month using key-based pagination (async).
         
         Yields:
-            Batches of rows for the specified month
+            Batches of rows for the specified date/time range
         """
-        last_day = self._get_last_day_of_month(year, month)
+        if end_day is None:
+            end_day = self._get_last_day_of_month(year, month)
         
-        startkey = [True, year, month, 1, 0, 0, 0]
-        endkey = [True, year, month, last_day, 23, 59, 59]
+        startkey = [True, year, month, start_day, start_hour, start_minute, 0]
+        endkey = [True, year, month, end_day, end_hour, end_minute, 59]
         
         logger.info(f"Starting extraction for {year}-{month:02d}")
         logger.info(f"  Start key: {startkey}")
@@ -285,8 +297,10 @@ class CloudantExtractorAsync:
             f"{month_batch_count} batches, {month_record_count} records"
         )
     
-    async def extract_year(self, year: int, start_month: int = 1, end_month: int = 12):
-        """Extract data for an entire year, month by month (async)"""
+    async def extract_year(self, year: int, start_month: int = 1, end_month: int = 12,
+                          start_day: int = 1, start_hour: int = 0, start_minute: int = 0,
+                          end_day: int = None, end_hour: int = 23, end_minute: int = 59):
+        """Extract data for a date/time range within a year (async)"""
         logger.info(f"=" * 80)
         logger.info(f"Starting extraction for year {year}")
         logger.info(f"Months: {start_month} to {end_month}")
@@ -302,8 +316,41 @@ class CloudantExtractorAsync:
             
             month_start_time = time.time()
             
+            # Determine day/time range for this specific month
+            # For the first month in range, use the specified start day/time
+            if month == start_month:
+                month_start_day = start_day
+                month_start_hour = start_hour
+                month_start_minute = start_minute
+            else:
+                # For subsequent months, start from beginning
+                month_start_day = 1
+                month_start_hour = 0
+                month_start_minute = 0
+            
+            # For the last month in range, use the specified end day/time
+            if month == end_month:
+                month_end_day = end_day
+                month_end_hour = end_hour
+                month_end_minute = end_minute
+            else:
+                # For earlier months, go to end of month
+                month_end_day = None  # Will be set to last day of month
+                month_end_hour = 23
+                month_end_minute = 59
+            
+            logger.info(f"Processing {year}-{month:02d}: day {month_start_day} {month_start_hour}:{month_start_minute} to day {month_end_day or 'last'} {month_end_hour}:{month_end_minute}")
+            
             try:
-                async for batch in self._extract_month_data(year, month):
+                async for batch in self._extract_month_data(
+                    year, month,
+                    start_day=month_start_day,
+                    start_hour=month_start_hour,
+                    start_minute=month_start_minute,
+                    end_day=month_end_day,
+                    end_hour=month_end_hour,
+                    end_minute=month_end_minute
+                ):
                     processed = self.process_batch(batch)
                     
                     self.total_batches_processed += 1
@@ -340,17 +387,31 @@ class CloudantExtractorAsync:
         start_year: int,
         start_month: int,
         end_year: int,
-        end_month: int
+        end_month: int,
+        start_day: int = 1,
+        start_hour: int = 0,
+        start_minute: int = 0,
+        end_day: int = None,
+        end_hour: int = 23,
+        end_minute: int = 59
     ):
-        """Extract data for a date range spanning multiple years (async)"""
-        logger.info(f"Extracting data from {start_year}-{start_month:02d} to {end_year}-{end_month:02d}")
+        """Extract data for a specific date/time range (async)"""
+        logger.info(f"Extracting data from {start_year}-{start_month:02d}-{start_day:02d} {start_hour:02d}:{start_minute:02d} "
+                   f"to {end_year}-{end_month:02d}-{end_day or 'last'}  {end_hour:02d}:{end_minute:02d}")
         
         for year in range(start_year, end_year + 1):
             first_month = start_month if year == start_year else 1
             last_month = end_month if year == end_year else 12
-            
-            await self.extract_year(year, first_month, last_month)
-    
+
+            await self.extract_year(
+                year, first_month, last_month,
+                start_day=start_day if year == start_year else 1,
+                start_hour=start_hour if year == start_year else 0,
+                start_minute=start_minute if year == start_year else 0,
+                end_day=end_day if year == end_year else None,
+                end_hour=end_hour if year == end_year else 23,
+                end_minute=end_minute if year == end_year else 59
+            )
     async def close(self):
         """Close the session and cleanup resources"""
         if self.session:

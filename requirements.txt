@@ -6,3 +6,6 @@ aiofiles>=23.2.1
 # Backend Flask dependencies
 Flask>=3.0.0
 Flask-CORS>=4.0.0
+
+# IBM Users API Resolution
+requests>=2.31.0
