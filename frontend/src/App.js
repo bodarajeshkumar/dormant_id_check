@@ -7,8 +7,13 @@ import {
   DatePickerInput,
   ProgressBar,
   InlineNotification,
+  InlineLoading,
   Loading,
   Tag,
+  Checkbox,
+  TimePicker,
+  NumberInput,
+  Modal,
   DataTable,
   TableContainer,
   Table,
@@ -16,9 +21,10 @@ import {
   TableRow,
   TableHeader,
   TableBody,
-  TableCell
+  TableCell,
+  Pagination
 } from '@carbon/react';
-import { Renew, Download, StopFilled } from '@carbon/icons-react';
+import { Renew, Download, StopFilled, TrashCan } from '@carbon/icons-react';
 import axios from 'axios';
 import './App.scss';
 
@@ -27,11 +33,21 @@ const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api
 function App() {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
+  const [startTime, setStartTime] = useState('00:00');
+  const [endTime, setEndTime] = useState('23:59');
+  const [batchSize, setBatchSize] = useState(3000);
   const [status, setStatus] = useState(null);
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [notification, setNotification] = useState(null);
   const [polling, setPolling] = useState(false);
+  const [availableFilters, setAvailableFilters] = useState([]);
+  const [selectedFilters, setSelectedFilters] = useState({});
+  const [viewModalOpen, setViewModalOpen] = useState(false);
+  const [viewData, setViewData] = useState([]);
+  const [viewPagination, setViewPagination] = useState(null);
+  const [viewFilename, setViewFilename] = useState('');
+  const [viewLoading, setViewLoading] = useState(false);
   const [extractions, setExtractions] = useState([]);
   const [loadingExtractions, setLoadingExtractions] = useState(false);
 
@@ -115,12 +131,125 @@ function App() {
     }
   };
 
-  // Initial status, history, and extractions fetch
+  // Fetch available filters
+  const fetchFilters = useCallback(async () => {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/filters`);
+      if (response.data.success) {
+        setAvailableFilters(response.data.filters);
+      }
+    } catch (error) {
+      console.error('Error fetching filters:', error);
+    }
+  }, []);
+
+  // Handle filter checkbox change
+  const handleFilterChange = (filterId, checked) => {
+    setSelectedFilters(prev => ({
+      ...prev,
+      [filterId]: checked
+    }));
+  };
+
+  // Handle view data
+  const handleViewData = async (filename) => {
+    setViewFilename(filename);
+    setViewModalOpen(true);
+    setViewLoading(true);
+    
+    try {
+      const response = await axios.get(`${API_BASE_URL}/view/${filename}`, {
+        params: { page: 1, page_size: 100 }
+      });
+      
+      if (response.data.success) {
+        setViewData(response.data.data);
+        setViewPagination(response.data.pagination);
+      } else {
+        setNotification({
+          kind: 'error',
+          title: 'Error',
+          subtitle: 'Failed to load data'
+        });
+        setViewModalOpen(false);
+      }
+    } catch (error) {
+      setNotification({
+        kind: 'error',
+        title: 'Error',
+        subtitle: error.response?.data?.error || 'Failed to load data'
+      });
+      setViewModalOpen(false);
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
+  // Handle delete history entry
+  const handleDeleteHistory = async (historyId) => {
+    if (!window.confirm('Are you sure you want to delete this history entry and all its associated files?')) {
+      return;
+    }
+
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/history/${historyId}`);
+      
+      if (response.data.success) {
+        setNotification({
+          kind: 'success',
+          title: 'Deleted Successfully',
+          subtitle: `Deleted ${response.data.deleted_count} file(s)`
+        });
+        
+        // Refresh history list
+        fetchHistory();
+      } else {
+        setNotification({
+          kind: 'error',
+          title: 'Delete Failed',
+          subtitle: response.data.error || 'Failed to delete history entry'
+        });
+      }
+    } catch (error) {
+      setNotification({
+        kind: 'error',
+        title: 'Delete Failed',
+        subtitle: error.response?.data?.error || 'Failed to delete history entry'
+      });
+    }
+  };
+
+  // Handle page change in data viewer
+  const handlePageChange = async ({ page, pageSize }) => {
+    setViewLoading(true);
+    
+    try {
+      const response = await axios.get(`${API_BASE_URL}/view/${viewFilename}`, {
+        params: { page, page_size: pageSize }
+      });
+      
+      if (response.data.success) {
+        setViewData(response.data.data);
+        setViewPagination(response.data.pagination);
+      }
+    } catch (error) {
+      setNotification({
+        kind: 'error',
+        title: 'Error',
+        subtitle: 'Failed to load page'
+      });
+    } finally {
+      setViewLoading(false);
+    }
+  };
+
+  // Initial status, history, filters, and extractions fetch
   useEffect(() => {
     fetchStatus();
     fetchHistory();
+    fetchFilters();
     fetchExtractions();
-  }, [fetchStatus, fetchHistory, fetchExtractions]);
+  }, [fetchStatus, fetchHistory, fetchFilters, fetchExtractions]);
 
   // Polling effect
   useEffect(() => {
@@ -151,8 +280,10 @@ function App() {
 
     try {
       const response = await axios.post(`${API_BASE_URL}/retrieve`, {
-        start_date: startDate,
-        end_date: endDate
+        start_date: `${startDate} ${startTime}:00`,
+        end_date: `${endDate} ${endTime}:00`,
+        batch_size: batchSize,
+        filters: selectedFilters
       });
 
       if (response.data.success) {
@@ -264,55 +395,77 @@ function App() {
         />
       )}
 
-      <Accordion>
-        <AccordionItem title="Date Range Configuration" open>
-          <div className="date-picker-container">
-            <DatePicker
-              datePickerType="single"
-              onChange={(dates) => {
-                if (dates && dates.length > 0) {
-                  const date = dates[0];
-                  // Format date in local timezone to avoid UTC conversion issues
-                  const year = date.getFullYear();
-                  const month = String(date.getMonth() + 1).padStart(2, '0');
-                  const day = String(date.getDate()).padStart(2, '0');
-                  const formatted = `${year}-${month}-${day}`;
-                  setStartDate(formatted);
-                }
-              }}
-            >
-              <DatePickerInput
-                id="start-date"
-                placeholder="yyyy-mm-dd"
-                labelText="Start Date"
-                disabled={isDisabled}
-              />
-            </DatePicker>
+      <div className="main-layout">
+        <div className="main-content">
+          <Accordion>
+            <AccordionItem title="Date Range Configuration" open>
+              <div className="date-picker-container">
+                <div className="datetime-group">
+                  <DatePicker
+                    datePickerType="single"
+                    onChange={(dates) => {
+                      if (dates && dates.length > 0) {
+                        const date = dates[0];
+                        const year = date.getFullYear();
+                        const month = String(date.getMonth() + 1).padStart(2, '0');
+                        const day = String(date.getDate()).padStart(2, '0');
+                        const formatted = `${year}-${month}-${day}`;
+                        setStartDate(formatted);
+                      }
+                    }}
+                  >
+                    <DatePickerInput
+                      id="start-date"
+                      placeholder="yyyy-mm-dd"
+                      labelText="Start Date"
+                      disabled={isDisabled}
+                    />
+                  </DatePicker>
+                  <TimePicker
+                    id="start-time"
+                    labelText="Start Time"
+                    value={startTime}
+                    onChange={(e) => setStartTime(e.target.value)}
+                    disabled={isDisabled}
+                    pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
+                    placeholder="HH:MM"
+                  />
+                </div>
 
-            <DatePicker
-              datePickerType="single"
-              onChange={(dates) => {
-                if (dates && dates.length > 0) {
-                  const date = dates[0];
-                  // Format date in local timezone to avoid UTC conversion issues
-                  const year = date.getFullYear();
-                  const month = String(date.getMonth() + 1).padStart(2, '0');
-                  const day = String(date.getDate()).padStart(2, '0');
-                  const formatted = `${year}-${month}-${day}`;
-                  setEndDate(formatted);
-                }
-              }}
-            >
-              <DatePickerInput
-                id="end-date"
-                placeholder="yyyy-mm-dd"
-                labelText="End Date"
-                disabled={isDisabled}
-              />
-            </DatePicker>
-          </div>
+                <div className="datetime-group">
+                  <DatePicker
+                    datePickerType="single"
+                    onChange={(dates) => {
+                      if (dates && dates.length > 0) {
+                        const date = dates[0];
+                        const year = date.getFullYear();
+                        const month = String(date.getMonth() + 1).padStart(2, '0');
+                        const day = String(date.getDate()).padStart(2, '0');
+                        const formatted = `${year}-${month}-${day}`;
+                        setEndDate(formatted);
+                      }
+                    }}
+                  >
+                    <DatePickerInput
+                      id="end-date"
+                      placeholder="yyyy-mm-dd"
+                      labelText="End Date"
+                      disabled={isDisabled}
+                    />
+                  </DatePicker>
+                  <TimePicker
+                    id="end-time"
+                    labelText="End Time"
+                    value={endTime}
+                    onChange={(e) => setEndTime(e.target.value)}
+                    disabled={isDisabled}
+                    pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
+                    placeholder="HH:MM"
+                  />
+                </div>
+              </div>
 
-          <div className="button-container">
+              <div className="button-container">
             <Button
               kind="primary"
               onClick={handleSubmit}
@@ -414,6 +567,45 @@ function App() {
                       </span>
                     </div>
                   )}
+                  {status.batch_size && (
+                    <div className="status-row">
+                      <span className="status-label">Batch Size:</span>
+                      <span className="status-value">{status.batch_size}</span>
+                    </div>
+                  )}
+                  {status.filters && Object.keys(status.filters).some(k => status.filters[k]) && (
+                    <div className="status-row">
+                      <span className="status-label">Filters:</span>
+                      <span className="status-value">
+                        {Object.keys(status.filters)
+                          .filter(k => status.filters[k])
+                          .map(filterId => {
+                            const filter = availableFilters.find(f => f.id === filterId);
+                            return filter ? filter.name : filterId;
+                          })
+                          .join(', ')}
+                      </span>
+                    </div>
+                  )}
+                  {status.output_file && (
+                    <div className="status-row">
+                      <Button
+                        kind="tertiary"
+                        size="sm"
+                        renderIcon={Download}
+                        onClick={() => handleDownload(status.output_file)}
+                      >
+                        Download
+                      </Button>
+                      <Button
+                        kind="ghost"
+                        size="sm"
+                        onClick={() => handleViewData(status.output_file)}
+                      >
+                        View Data
+                      </Button>
+                    </div>
+                  )}
                 </>
               )}
 
@@ -467,16 +659,35 @@ function App() {
                         {new Date(entry.timestamp).toLocaleString()}
                       </span>
                       {entry.status === 'completed' && entry.filename && (
-                        <Button
-                          kind="ghost"
-                          size="sm"
-                          renderIcon={Download}
-                          onClick={() => handleDownload(entry.filename)}
-                          className="history-download-btn"
-                        >
-                          Download
-                        </Button>
+                        <>
+                          <Button
+                            kind="ghost"
+                            size="sm"
+                            renderIcon={Download}
+                            onClick={() => handleDownload(entry.filename)}
+                            className="history-download-btn"
+                          >
+                            Download
+                          </Button>
+                          <Button
+                            kind="ghost"
+                            size="sm"
+                            onClick={() => handleViewData(entry.filename)}
+                            className="history-download-btn"
+                          >
+                            View Data
+                          </Button>
+                        </>
                       )}
+                      <Button
+                        kind="danger--ghost"
+                        size="sm"
+                        renderIcon={TrashCan}
+                        onClick={() => handleDeleteHistory(entry.id)}
+                        className="history-delete-btn"
+                        iconDescription="Delete"
+                        hasIconOnly
+                      />
                     </div>
                     <div className="history-item-details">
                       <div className="history-detail">
@@ -508,6 +719,26 @@ function App() {
                           </span>
                         </div>
                       )}
+                      {entry.batch_size && (
+                        <div className="history-detail">
+                          <span className="history-label">Batch Size:</span>
+                          <span className="history-value">{entry.batch_size}</span>
+                        </div>
+                      )}
+                      {entry.filters && Object.keys(entry.filters).some(k => entry.filters[k]) && (
+                        <div className="history-detail">
+                          <span className="history-label">Filters:</span>
+                          <span className="history-value">
+                            {Object.keys(entry.filters)
+                              .filter(k => entry.filters[k])
+                              .map(filterId => {
+                                const filter = availableFilters.find(f => f.id === filterId);
+                                return filter ? filter.name : filterId;
+                              })
+                              .join(', ')}
+                          </span>
+                        </div>
+                      )}
                       {entry.filename && (
                         <div className="history-detail">
                           <span className="history-label">File:</span>
@@ -535,6 +766,126 @@ function App() {
           )}
         </AccordionItem>
       </Accordion>
+        </div>
+
+        {/* Right sidebar with configuration options */}
+        <div className="config-sidebar">
+          <div className="batch-size-section">
+            <NumberInput
+              id="batch-size"
+              label="Batch Size"
+              helperText="Number of records to fetch per batch (1000-5000 recommended)"
+              min={100}
+              max={10000}
+              step={100}
+              value={batchSize}
+              onChange={(e, { value }) => setBatchSize(value)}
+              disabled={isDisabled}
+              invalidText="Batch size must be between 100 and 10000"
+            />
+          </div>
+
+          <div className="filters-section">
+            <h4 className="filters-title">Data Filtering Options</h4>
+            <p className="filters-description">
+              Select which filters to apply during extraction. Only records passing all selected filters will be included.
+            </p>
+            <div className="filters-container">
+              {availableFilters.map((filter) => (
+                <Checkbox
+                  key={filter.id}
+                  id={filter.id}
+                  labelText={filter.name}
+                  checked={selectedFilters[filter.id] || false}
+                  onChange={(e) => handleFilterChange(filter.id, e.target.checked)}
+                  disabled={isDisabled}
+                  helperText={filter.description}
+                />
+              ))}
+            </div>
+            {availableFilters.length === 0 && (
+              <p className="no-filters">Loading filters...</p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Data Viewer Modal */}
+      <Modal
+        open={viewModalOpen}
+        onRequestClose={() => setViewModalOpen(false)}
+        modalHeading={`Viewing: ${viewFilename}`}
+        passiveModal
+        size="lg"
+      >
+        {viewLoading ? (
+          <div style={{ padding: '2rem', textAlign: 'center' }}>
+            <InlineLoading description="Loading data..." />
+          </div>
+        ) : viewData.length > 0 ? (
+          <>
+            <DataTable
+              rows={viewData.map((item, idx) => ({
+                id: `row-${viewPagination.page}-${idx}`,
+                ...item
+              }))}
+              headers={
+                viewData.length > 0
+                  ? Object.keys(viewData[0]).map(key => ({
+                      key,
+                      header: key.charAt(0).toUpperCase() + key.slice(1).replace(/_/g, ' ')
+                    }))
+                  : []
+              }
+            >
+              {({ rows, headers, getTableProps, getHeaderProps, getRowProps }) => (
+                <TableContainer>
+                  <Table {...getTableProps()}>
+                    <TableHead>
+                      <TableRow>
+                        {headers.map(header => (
+                          <TableHeader {...getHeaderProps({ header })}>
+                            {header.header}
+                          </TableHeader>
+                        ))}
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {rows.map(row => (
+                        <TableRow {...getRowProps({ row })}>
+                          {row.cells.map(cell => (
+                            <TableCell key={cell.id}>
+                              {typeof cell.value === 'object'
+                                ? JSON.stringify(cell.value)
+                                : cell.value}
+                            </TableCell>
+                          ))}
+                        </TableRow>
+                      ))}
+                    </TableBody>
+                  </Table>
+                </TableContainer>
+              )}
+            </DataTable>
+            <div style={{ marginTop: '1rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <div>
+                Showing {((viewPagination.page - 1) * viewPagination.page_size) + 1} - {Math.min(viewPagination.page * viewPagination.page_size, viewPagination.total_records)} of {viewPagination.total_records} records
+              </div>
+              <Pagination
+                page={viewPagination.page}
+                totalItems={viewPagination.total_records}
+                pageSize={viewPagination.page_size}
+                pageSizes={[100, 250, 500, 1000]}
+                onChange={handlePageChange}
+              />
+            </div>
+          </>
+        ) : (
+          <div style={{ padding: '2rem', textAlign: 'center' }}>
+            <p>No data available</p>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

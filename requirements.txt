@@ -1,8 +1,11 @@
-# Core dependencies for Cloudant data extraction pipeline
-requests>=2.31.0
-urllib3>=2.0.0
+# Core dependencies for Cloudant data extraction pipeline (async version)
 python-dotenv>=1.0.0
+aiohttp>=3.9.0
+aiofiles>=23.2.1
 
-# Optional: For async operations (if needed in future)
-# aiohttp>=3.9.0
-# asyncio>=3.4.3
+# Backend Flask dependencies
+Flask>=3.0.0
+Flask-CORS>=4.0.0
+
+# IBM Users API Resolution
+requests>=2.31.0

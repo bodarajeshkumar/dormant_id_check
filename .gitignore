@@ -27,6 +27,7 @@ wheels/
 # Logs
 *.log
 cloudant_extraction.log
+ibm_users_resolution.log
 
 # IDE
 .vscode/
@@ -44,7 +45,13 @@ dormant_accounts*.json
 output/
 
 # Extracted data files
+backend/backend/outputs
 backend/extractions/
+backend/backend/extractions/
+
+# Resolution output files
+backend/resolutions/
+backend/backend/resolutions/
 
 # Status files
 status.json
@@ -55,3 +62,6 @@ results/
 venv/
 env/
 ENV/
+
+# Documentation (exclude markdown files)
+*.md

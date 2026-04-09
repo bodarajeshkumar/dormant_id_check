@@ -3,7 +3,7 @@
 @use '@carbon/react/scss/breakpoint' as *;
 
 .app-container {
-  max-width: 1200px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: $spacing-07;
   min-height: 100vh;
@@ -26,14 +26,88 @@
   }
 }
 
+// Main layout with sidebar
+.main-layout {
+  display: grid;
+  grid-template-columns: 1fr 300px;
+  gap: $spacing-07;
+  align-items: start;
+  
+  @include breakpoint-down(lg) {
+    grid-template-columns: 1fr 260px;
+    gap: $spacing-06;
+  }
+  
+  @include breakpoint-down(md) {
+    grid-template-columns: 1fr;
+    gap: $spacing-06;
+  }
+}
+
+.config-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-05;
+  padding: $spacing-06;
+  background-color: $layer-02;
+  border-radius: 8px;
+  border: 1px solid $border-subtle-01;
+  height: fit-content;
+  position: sticky;
+  top: $spacing-05;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  
+  @include breakpoint-down(md) {
+    position: static;
+    order: 2;
+  }
+}
+
+.main-content {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-05;
+  background-color: $layer-01;
+  
+  @include breakpoint-down(md) {
+    order: 1;
+  }
+  
+  .cds--accordion {
+    background-color: transparent;
+  }
+}
+
 .date-picker-container {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: $spacing-05;
-  margin-bottom: $spacing-05;
   
   @include breakpoint-down(md) {
     grid-template-columns: 1fr;
+  }
+}
+
+.datetime-group {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-03;
+  
+  .cds--date-picker,
+  .cds--time-picker {
+    width: 100%;
+  }
+  
+  .cds--time-picker input {
+    width: 100%;
+  }
+}
+
+.batch-size-section {
+  margin-bottom: $spacing-05;
+  
+  .cds--number-input {
+    width: 100%;
   }
 }
 
@@ -119,6 +193,56 @@
 // Loading animation
 .cds--loading {
   margin-right: $spacing-02;
+}
+
+// Filters section styles (inside sidebar)
+.filters-section {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-03;
+}
+
+.filters-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: $text-primary;
+  margin: 0;
+}
+
+.filters-description {
+  color: $text-secondary;
+  font-size: 0.75rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.filters-container {
+  display: flex;
+  flex-direction: column;
+  gap: $spacing-04;
+  
+  .cds--checkbox-wrapper {
+    margin-bottom: 0;
+  }
+  
+  .cds--checkbox-label {
+    font-weight: 500;
+    font-size: 0.875rem;
+  }
+  
+  .cds--form__helper-text {
+    color: $text-secondary;
+    font-size: 0.75rem;
+    margin-top: $spacing-02;
+  }
+}
+
+.no-filters {
+  color: $text-secondary;
+  font-style: italic;
+  text-align: center;
+  padding: $spacing-03;
+  font-size: 0.75rem;
 }
 
 // History styles
