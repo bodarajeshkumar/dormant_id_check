@@ -299,6 +299,17 @@ function App() {
 
   // Handle form submission
   const handleSubmit = async () => {
+    // Check if at least one filter is selected
+    const hasSelectedFilter = Object.values(selectedFilters).some(value => value === true);
+    if (!hasSelectedFilter) {
+      setNotification({
+        kind: 'error',
+        title: 'Validation Error',
+        subtitle: 'Please select at least one filter option before starting extraction'
+      });
+      return;
+    }
+
     // Validation based on extraction mode
     if (extractionMode === 'date_range') {
       if (!startDate || !endDate) {
@@ -789,22 +800,27 @@ function App() {
                       </Button>
                     </div>
                     <div className="history-item-details">
-                      <div className="history-detail">
-                        <span className="history-label">Date Range:</span>
-                        <span className="history-value">
-                          {entry.start_date} to {entry.end_date}
-                        </span>
-                      </div>
+                      {/* Only show Date Range and Months for date_range mode */}
+                      {(!entry.extraction_mode || entry.extraction_mode === 'date_range') && (
+                        <>
+                          <div className="history-detail">
+                            <span className="history-label">Date Range:</span>
+                            <span className="history-value">
+                              {entry.start_date} to {entry.end_date}
+                            </span>
+                          </div>
+                          <div className="history-detail">
+                            <span className="history-label">Months:</span>
+                            <span className="history-value">
+                              {entry.months_processed || 0}
+                            </span>
+                          </div>
+                        </>
+                      )}
                       <div className="history-detail">
                         <span className="history-label">Records:</span>
                         <span className="history-value">
                           {entry.records_processed?.toLocaleString() || 0}
-                        </span>
-                      </div>
-                      <div className="history-detail">
-                        <span className="history-label">Months:</span>
-                        <span className="history-value">
-                          {entry.months_processed || 0}
                         </span>
                       </div>
                       {entry.duration_seconds != null && entry.duration_seconds > 0 && (

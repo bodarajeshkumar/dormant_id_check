@@ -183,6 +183,7 @@ class ExtractorWrapper:
         self.output_file = output_path
         self.output_path = output_path  # Store for later use
         self.extracted_data = []
+        self.total_records_extracted = 0  # Track total records for specific_ids mode
         
         try:
             if self.extraction_mode == 'specific_ids':
@@ -216,6 +217,7 @@ class ExtractorWrapper:
                     # Create a simple record with the user ID
                     record = {'id': user_id, 'email': user_id}
                     self.extracted_data.append(record)
+                    self.total_records_extracted += 1
                     
                     # Update progress
                     progress = int(((idx + 1) / total_ids) * 100)
@@ -422,14 +424,15 @@ class ExtractorWrapper:
                     'id': datetime.now().strftime('%Y%m%d_%H%M%S'),
                     'start_date': self.start_date,
                     'end_date': self.end_date,
-                    'records_processed': self.extractor.total_records_processed if self.extractor else 0,
+                    'records_processed': self.extractor.total_records_processed if self.extractor else self.total_records_extracted,
                     'months_processed': self.extractor.months_processed if self.extractor else 0,
                     'status': 'completed',
                     'error': None,
                     'timestamp': datetime.now().isoformat(),
                     'duration_seconds': self.duration_seconds,
                     'filename': self.output_filename,
-                    'filters': self.filter_config
+                    'filters': self.filter_config,
+                    'extraction_mode': self.extraction_mode
                 })
                 logger.info("Status update and history entry complete!")
             
