@@ -206,8 +206,8 @@ def consolidate_decisions(
         output_path.parent.mkdir(parents=True, exist_ok=True)
         
         # Save consolidated decisions
-        with open(output_file, 'w') as f:
-            json.dump(decisions, f, indent=2)
+        with open(output_file, 'w', encoding='utf-8') as f:
+            json.dump(decisions, f, indent=2, ensure_ascii=False)
         
         # Print summary
         print(f"\n{'='*70}")

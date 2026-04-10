@@ -210,6 +210,8 @@ async def run_validation_pipeline(
             
             for user in users:
                 email = user.get('email', '')
+                # Only IBM emails (ending with @ibm.com or .ibm.com) go to BluPages
+                # Exclude mail.test.*.ibm.com and malinator.com (already filtered in bluepages_validator_async.py)
                 if email.endswith('@ibm.com') or '.ibm.com' in email:
                     ibm_users.append(user)
                 else:
@@ -217,21 +219,21 @@ async def run_validation_pipeline(
             
             print(f"  IBM emails: {len(ibm_users)}, Non-IBM emails: {len(non_ibm_users)}")
             
-            # Add non-IBM users directly to not_to_be_deleted (they can't be validated via BluPages)
+            # Add non-IBM users directly to to_be_deleted (per flowchart: remaining mails go to "To be deleted")
             if non_ibm_users:
                 # Use the same outputs directory structure
                 outputs_dir = Path("backend/outputs")
                 outputs_dir.mkdir(parents=True, exist_ok=True)
-                not_to_delete_file = outputs_dir / "not_to_be_deleted.json"
+                to_delete_file = outputs_dir / f"to_be_deleted_{timestamp}.json"
                 
-                if not_to_delete_file.exists():
-                    with open(not_to_delete_file, 'r') as f:
+                if to_delete_file.exists():
+                    with open(to_delete_file, 'r') as f:
                         existing = json.load(f)
                     existing.extend(non_ibm_users)
-                    with open(not_to_delete_file, 'w') as f:
+                    with open(to_delete_file, 'w') as f:
                         json.dump(existing, f, indent=2)
                 else:
-                    with open(not_to_delete_file, 'w') as f:
+                    with open(to_delete_file, 'w') as f:
                         json.dump(non_ibm_users, f, indent=2)
             
             # Run BluPages validation only on IBM users - pass data directly
@@ -248,21 +250,23 @@ async def run_validation_pipeline(
                 
                 summary["found_in_bluepages"] = result["output"]["found_in_bluepages"]
                 summary["not_found_in_bluepages"] = result["output"]["not_found_in_bluepages"]
-                summary["to_delete"] = result["output"]["not_found_in_bluepages"]
-                summary["not_to_delete"] = result["output"]["found_in_bluepages"] + summary.get("recent_login", 0) + len(non_ibm_users)
+                # Non-IBM users + users not found in BluPages = to_delete
+                summary["to_delete"] = result["output"]["not_found_in_bluepages"] + len(non_ibm_users)
+                # Users found in BluPages + recent login users = not_to_delete
+                summary["not_to_delete"] = result["output"]["found_in_bluepages"] + summary.get("recent_login", 0)
                 
                 print(f"✓ BluPages Validation complete: {result['output']['found_in_bluepages']} found, {result['output']['not_found_in_bluepages']} not found")
+                print(f"  Non-IBM emails marked for deletion: {len(non_ibm_users)}")
             else:
                 print(f"✓ No IBM users to validate via BluPages")
-                summary["to_delete"] = 0
-                summary["not_to_delete"] = len(non_ibm_users) + summary.get("recent_login", 0)
+                # All non-IBM users go to to_delete
+                summary["to_delete"] = len(non_ibm_users)
+                summary["not_to_delete"] = summary.get("recent_login", 0)
                 
-                # Create empty to_be_deleted file for consistency
+                # Non-IBM users already added to to_be_deleted file above
                 outputs_dir = Path("backend/outputs")
                 outputs_dir.mkdir(parents=True, exist_ok=True)
                 to_delete_file = outputs_dir / f"to_be_deleted_{timestamp}.json"
-                with open(to_delete_file, 'w') as f:
-                    json.dump([], f, indent=2)
                 
                 # Store result for final outputs
                 results["bluepages"] = {

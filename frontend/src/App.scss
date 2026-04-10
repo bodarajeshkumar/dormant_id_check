@@ -103,6 +103,34 @@
   }
 }
 
+.extraction-mode-section {
+  margin-bottom: $spacing-06;
+  padding-bottom: $spacing-05;
+  border-bottom: 1px solid $border-subtle-01;
+  
+  .cds--radio-button-group {
+    margin-top: $spacing-03;
+  }
+  
+  .cds--radio-button__label {
+    font-size: 0.875rem;
+  }
+}
+
+.specific-ids-container {
+  margin-top: $spacing-05;
+  
+  .cds--text-area {
+    width: 100%;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.875rem;
+  }
+  
+  .cds--text-area__wrapper {
+    width: 100%;
+  }
+}
+
 .batch-size-section {
   margin-bottom: $spacing-05;
   
