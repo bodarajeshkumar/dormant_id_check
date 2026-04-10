@@ -387,6 +387,7 @@ function App() {
           title: 'Stop Requested',
           subtitle: 'Extraction will stop after current batch'
         });
+        setPolling(false); // Stop polling immediately
         fetchStatus();
       }
     } catch (error) {
@@ -404,10 +405,21 @@ function App() {
     try {
       const response = await axios.post(`${API_BASE_URL}/reset`);
       if (response.data.success) {
+        // Clear all form inputs
+        setExtractionMode('date_range');
+        setStartDate('');
+        setEndDate('');
+        setStartTime('00:00');
+        setEndTime('23:59');
+        setSpecificIds('');
+        setBatchSize(3000);
+        setSelectedFilters({});
+        setPolling(false);
+        
         setNotification({
           kind: 'success',
           title: 'Success',
-          subtitle: 'Status reset successfully'
+          subtitle: 'Status reset successfully. All form inputs cleared.'
         });
         fetchStatus();
       }
@@ -446,6 +458,7 @@ function App() {
 
   const isProcessing = status?.status === 'under_processing';
   const isDisabled = isProcessing || loading;
+  const canStop = isProcessing || loading || polling;
 
   return (
     <div className="app-container">
@@ -587,7 +600,7 @@ function App() {
               kind="danger"
               renderIcon={StopFilled}
               onClick={handleStop}
-              disabled={!isProcessing}
+              disabled={!canStop}
             >
               Stop Extraction
             </Button>

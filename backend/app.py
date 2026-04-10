@@ -399,8 +399,8 @@ class ExtractorWrapper:
                 self.finalize_output_file()
             
             # Run validation pipeline AFTER file is finalized
-            logger.info(f"Finally block: extraction_successful={hasattr(self, 'extraction_successful')}, value={getattr(self, 'extraction_successful', None)}")
-            if hasattr(self, 'extraction_successful') and self.extraction_successful:
+            logger.info(f"Finally block: extraction_successful={hasattr(self, 'extraction_successful')}, value={getattr(self, 'extraction_successful', None)}, stop_requested={self.stop_requested}")
+            if hasattr(self, 'extraction_successful') and self.extraction_successful and not self.stop_requested:
                 logger.info("Running validation pipeline...")
                 try:
                     await self._run_validation_pipeline(self.output_path)
@@ -408,6 +408,8 @@ class ExtractorWrapper:
                 except Exception as e:
                     logger.error(f"Validation pipeline failed: {e}", exc_info=True)
                     # Continue to mark as finished even if validation fails
+            elif self.stop_requested:
+                logger.info("Skipping validation pipeline because extraction was stopped")
                 
                 # Mark as finished (successful completion) - AFTER validation completes
                 logger.info("Updating status to finished...")
