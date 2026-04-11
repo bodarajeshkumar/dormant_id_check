@@ -49,12 +49,14 @@ WORKDIR /app
 COPY requirements.txt ./
 COPY backend/requirements.txt ./backend-requirements.txt
 
-# Install Python dependencies
+# Install Python dependencies (includes async libraries: aiohttp, aiofiles)
 RUN pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir -r backend-requirements.txt
 
-# Copy backend application
-COPY cloudant_extractor.py ./
+# Copy backend application (async version)
+COPY cloudant_extractor_async.py ./
+COPY bluepages_validator_async.py ./
+COPY ibm_users_resolver_async.py ./
 COPY backend/ ./backend/
 
 # Copy built frontend from builder stage
@@ -62,11 +64,13 @@ COPY --from=frontend-builder /frontend/build /usr/share/nginx/html
 
 # Create necessary directories with proper permissions for OpenShift
 RUN mkdir -p /app/backend/extractions && \
+    mkdir -p /app/backend/resolutions && \
     mkdir -p /var/log/supervisor && \
     mkdir -p /var/cache/nginx && \
     mkdir -p /var/run && \
     mkdir -p /var/log/nginx && \
     chmod -R 777 /app/backend/extractions && \
+    chmod -R 777 /app/backend/resolutions && \
     chmod -R 777 /var/log/supervisor && \
     chmod -R 777 /var/cache/nginx && \
     chmod -R 777 /var/run && \

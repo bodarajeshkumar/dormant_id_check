@@ -60,6 +60,10 @@ spec:
         volumeMounts:
         - name: extraction-data
           mountPath: /app/backend/extractions
+        - name: resolution-data
+          mountPath: /app/backend/resolutions
+        - name: app-data
+          mountPath: /app/data
         livenessProbe:
           httpGet:
             path: /api/health
@@ -78,6 +82,10 @@ spec:
           failureThreshold: 3
       volumes:
       - name: extraction-data
+        emptyDir: {}
+      - name: resolution-data
+        emptyDir: {}
+      - name: app-data
         emptyDir: {}
 
 # Made with Bob

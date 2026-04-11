@@ -53,7 +53,7 @@ oc apply -f openshift/pvc.yaml
 oc apply -f openshift/buildconfig.yaml
 
 # Or import pre-built image
-oc import-image cloudant-extractor:latest --from=your-registry/cloudant-extractor:latest --confirm
+oc import-image cloudant-extractor:latest --from=image-registry.openshift-image-registry.svc:5000/cloudant-extractor/cloudant-extractor:latest --confirm
 
 # Deploy the application
 oc apply -f openshift/deployment.yaml

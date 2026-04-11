@@ -5,7 +5,6 @@ namespace: cloudant-extractor
 
 resources:
 - secret.yaml
-- pvc.yaml
 - buildconfig.yaml
 - deployment.yaml
 - service.yaml
