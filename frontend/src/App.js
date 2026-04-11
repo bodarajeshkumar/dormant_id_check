@@ -22,7 +22,10 @@ import {
   TableHeader,
   TableBody,
   TableCell,
-  Pagination
+  Pagination,
+  RadioButtonGroup,
+  RadioButton,
+  TextArea
 } from '@carbon/react';
 import { Renew, Download, StopFilled, TrashCan } from '@carbon/icons-react';
 import axios from 'axios';
@@ -31,10 +34,12 @@ import './App.scss';
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:5000/api';
 
 function App() {
+  const [extractionMode, setExtractionMode] = useState('date_range');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [startTime, setStartTime] = useState('00:00');
   const [endTime, setEndTime] = useState('23:59');
+  const [specificIds, setSpecificIds] = useState('');
   const [batchSize, setBatchSize] = useState(3000);
   const [status, setStatus] = useState(null);
   const [history, setHistory] = useState([]);
@@ -55,12 +60,25 @@ function App() {
   const fetchStatus = useCallback(async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/status`);
-      setStatus(response.data);
+      console.log('Fetched status:', response.data); // Debug log
+      const newStatus = response.data;
       
-      // Start polling if under processing
-      if (response.data.status === 'under_processing' && !polling) {
+      // Update status state
+      setStatus(prevStatus => {
+        // If transitioning from under_processing to finished/stopped/failed,
+        // stop polling immediately
+        if (prevStatus?.status === 'under_processing' &&
+            newStatus.status !== 'under_processing') {
+          console.log('Status transition detected, stopping polling');
+          setPolling(false);
+        }
+        return newStatus;
+      });
+      
+      // Start polling if under processing, stop if not
+      if (newStatus.status === 'under_processing') {
         setPolling(true);
-      } else if (response.data.status !== 'under_processing' && polling) {
+      } else if (newStatus.status === 'finished' || newStatus.status === 'stopped' || newStatus.status === 'failed') {
         setPolling(false);
       }
     } catch (error) {
@@ -71,7 +89,7 @@ function App() {
         subtitle: 'Failed to fetch status from server'
       });
     }
-  }, [polling]);
+  }, []); // Remove polling dependency to avoid stale closure
 
   // Fetch history from API
   const fetchHistory = useCallback(async () => {
@@ -131,6 +149,44 @@ function App() {
     }
   };
 
+  // Handle delete history
+  const handleDeleteHistory = async (historyId) => {
+    if (!window.confirm('Are you sure you want to delete this extraction and all its associated files?')) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/history/${historyId}`, {
+        method: 'DELETE',
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setNotification({
+          kind: 'success',
+          title: 'Deletion Successful',
+          subtitle: `Deleted ${data.deleted_count} file(s). ${data.failed_count > 0 ? `Failed to delete ${data.failed_count} file(s).` : ''}`,
+        });
+        // Refresh history
+        fetchHistory();
+      } else {
+        setNotification({
+          kind: 'error',
+          title: 'Deletion Failed',
+          subtitle: data.error || 'Failed to delete history entry',
+        });
+      }
+    } catch (error) {
+      console.error('Error deleting history:', error);
+      setNotification({
+        kind: 'error',
+        title: 'Deletion Error',
+        subtitle: error.message,
+      });
+    }
+  };
+
   // Fetch available filters
   const fetchFilters = useCallback(async () => {
     try {
@@ -185,40 +241,6 @@ function App() {
     }
   };
 
-  // Handle delete history entry
-  const handleDeleteHistory = async (historyId) => {
-    if (!window.confirm('Are you sure you want to delete this history entry and all its associated files?')) {
-      return;
-    }
-
-    try {
-      const response = await axios.delete(`${API_BASE_URL}/history/${historyId}`);
-      
-      if (response.data.success) {
-        setNotification({
-          kind: 'success',
-          title: 'Deleted Successfully',
-          subtitle: `Deleted ${response.data.deleted_count} file(s)`
-        });
-        
-        // Refresh history list
-        fetchHistory();
-      } else {
-        setNotification({
-          kind: 'error',
-          title: 'Delete Failed',
-          subtitle: response.data.error || 'Failed to delete history entry'
-        });
-      }
-    } catch (error) {
-      setNotification({
-        kind: 'error',
-        title: 'Delete Failed',
-        subtitle: error.response?.data?.error || 'Failed to delete history entry'
-      });
-    }
-  };
-
   // Handle page change in data viewer
   const handlePageChange = async ({ page, pageSize }) => {
     setViewLoading(true);
@@ -255,36 +277,83 @@ function App() {
   useEffect(() => {
     let interval;
     if (polling) {
+      console.log('Starting polling...'); // Debug log
       interval = setInterval(() => {
+        console.log('Polling status...'); // Debug log
         fetchStatus();
-      }, 5000); // Poll every 5 seconds
+        // Also refresh history during polling to catch completed jobs
+        fetchHistory();
+      }, 3000); // Poll every 3 seconds (faster updates)
+    } else {
+      console.log('Polling stopped'); // Debug log
+      // Fetch history one final time when polling stops
+      fetchHistory();
     }
     return () => {
-      if (interval) clearInterval(interval);
+      if (interval) {
+        console.log('Clearing polling interval'); // Debug log
+        clearInterval(interval);
+      }
     };
-  }, [polling, fetchStatus]);
+  }, [polling, fetchStatus, fetchHistory]);
 
   // Handle form submission
   const handleSubmit = async () => {
-    if (!startDate || !endDate) {
+    // Check if at least one filter is selected
+    const hasSelectedFilter = Object.values(selectedFilters).some(value => value === true);
+    if (!hasSelectedFilter) {
       setNotification({
         kind: 'error',
         title: 'Validation Error',
-        subtitle: 'Please select both start and end dates'
+        subtitle: 'Please select at least one filter option before starting extraction'
       });
       return;
+    }
+
+    // Validation based on extraction mode
+    if (extractionMode === 'date_range') {
+      if (!startDate || !endDate) {
+        setNotification({
+          kind: 'error',
+          title: 'Validation Error',
+          subtitle: 'Please select both start and end dates'
+        });
+        return;
+      }
+    } else if (extractionMode === 'specific_ids') {
+      if (!specificIds.trim()) {
+        setNotification({
+          kind: 'error',
+          title: 'Validation Error',
+          subtitle: 'Please enter at least one user ID'
+        });
+        return;
+      }
     }
 
     setLoading(true);
     setNotification(null);
 
     try {
-      const response = await axios.post(`${API_BASE_URL}/retrieve`, {
-        start_date: `${startDate} ${startTime}:00`,
-        end_date: `${endDate} ${endTime}:00`,
+      const requestData = {
+        extraction_mode: extractionMode,
         batch_size: batchSize,
         filters: selectedFilters
-      });
+      };
+
+      if (extractionMode === 'date_range') {
+        requestData.start_date = `${startDate} ${startTime}:00`;
+        requestData.end_date = `${endDate} ${endTime}:00`;
+      } else if (extractionMode === 'specific_ids') {
+        // Parse IDs from textarea (comma, space, or newline separated)
+        const ids = specificIds
+          .split(/[\n,\s]+/)
+          .map(id => id.trim())
+          .filter(id => id.length > 0);
+        requestData.user_ids = ids;
+      }
+
+      const response = await axios.post(`${API_BASE_URL}/retrieve`, requestData);
 
       if (response.data.success) {
         setNotification({
@@ -318,6 +387,7 @@ function App() {
           title: 'Stop Requested',
           subtitle: 'Extraction will stop after current batch'
         });
+        setPolling(false); // Stop polling immediately
         fetchStatus();
       }
     } catch (error) {
@@ -335,10 +405,21 @@ function App() {
     try {
       const response = await axios.post(`${API_BASE_URL}/reset`);
       if (response.data.success) {
+        // Clear all form inputs
+        setExtractionMode('date_range');
+        setStartDate('');
+        setEndDate('');
+        setStartTime('00:00');
+        setEndTime('23:59');
+        setSpecificIds('');
+        setBatchSize(3000);
+        setSelectedFilters({});
+        setPolling(false);
+        
         setNotification({
           kind: 'success',
           title: 'Success',
-          subtitle: 'Status reset successfully'
+          subtitle: 'Status reset successfully. All form inputs cleared.'
         });
         fetchStatus();
       }
@@ -377,6 +458,7 @@ function App() {
 
   const isProcessing = status?.status === 'under_processing';
   const isDisabled = isProcessing || loading;
+  const canStop = isProcessing || loading || polling;
 
   return (
     <div className="app-container">
@@ -398,72 +480,112 @@ function App() {
       <div className="main-layout">
         <div className="main-content">
           <Accordion>
-            <AccordionItem title="Date Range Configuration" open>
-              <div className="date-picker-container">
-                <div className="datetime-group">
-                  <DatePicker
-                    datePickerType="single"
-                    onChange={(dates) => {
-                      if (dates && dates.length > 0) {
-                        const date = dates[0];
-                        const year = date.getFullYear();
-                        const month = String(date.getMonth() + 1).padStart(2, '0');
-                        const day = String(date.getDate()).padStart(2, '0');
-                        const formatted = `${year}-${month}-${day}`;
-                        setStartDate(formatted);
-                      }
-                    }}
-                  >
-                    <DatePickerInput
-                      id="start-date"
-                      placeholder="yyyy-mm-dd"
-                      labelText="Start Date"
-                      disabled={isDisabled}
-                    />
-                  </DatePicker>
-                  <TimePicker
-                    id="start-time"
-                    labelText="Start Time"
-                    value={startTime}
-                    onChange={(e) => setStartTime(e.target.value)}
+            <AccordionItem title="Extraction Configuration" open>
+              <div className="extraction-mode-section">
+                <RadioButtonGroup
+                  legendText="Extraction Mode"
+                  name="extraction-mode"
+                  valueSelected={extractionMode}
+                  onChange={setExtractionMode}
+                  orientation="horizontal"
+                >
+                  <RadioButton
+                    labelText="Extract using Date Range"
+                    value="date_range"
+                    id="radio-date-range"
                     disabled={isDisabled}
-                    pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
-                    placeholder="HH:MM"
                   />
-                </div>
-
-                <div className="datetime-group">
-                  <DatePicker
-                    datePickerType="single"
-                    onChange={(dates) => {
-                      if (dates && dates.length > 0) {
-                        const date = dates[0];
-                        const year = date.getFullYear();
-                        const month = String(date.getMonth() + 1).padStart(2, '0');
-                        const day = String(date.getDate()).padStart(2, '0');
-                        const formatted = `${year}-${month}-${day}`;
-                        setEndDate(formatted);
-                      }
-                    }}
-                  >
-                    <DatePickerInput
-                      id="end-date"
-                      placeholder="yyyy-mm-dd"
-                      labelText="End Date"
-                      disabled={isDisabled}
-                    />
-                  </DatePicker>
-                  <TimePicker
-                    id="end-time"
-                    labelText="End Time"
-                    value={endTime}
-                    onChange={(e) => setEndTime(e.target.value)}
+                  <RadioButton
+                    labelText="Extract using Specific IDs"
+                    value="specific_ids"
+                    id="radio-specific-ids"
                     disabled={isDisabled}
-                    pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
-                    placeholder="HH:MM"
                   />
-                </div>
+                </RadioButtonGroup>
               </div>
+
+              {extractionMode === 'date_range' && (
+                <div className="date-picker-container">
+                  <div className="datetime-group">
+                    <DatePicker
+                      datePickerType="single"
+                      onChange={(dates) => {
+                        if (dates && dates.length > 0) {
+                          const date = dates[0];
+                          const year = date.getFullYear();
+                          const month = String(date.getMonth() + 1).padStart(2, '0');
+                          const day = String(date.getDate()).padStart(2, '0');
+                          const formatted = `${year}-${month}-${day}`;
+                          setStartDate(formatted);
+                        }
+                      }}
+                    >
+                      <DatePickerInput
+                        id="start-date"
+                        placeholder="yyyy-mm-dd"
+                        labelText="Start Date"
+                        disabled={isDisabled}
+                      />
+                    </DatePicker>
+                    <TimePicker
+                      id="start-time"
+                      labelText="Start Time"
+                      value={startTime}
+                      onChange={(e) => setStartTime(e.target.value)}
+                      disabled={isDisabled}
+                      pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
+                      placeholder="HH:MM"
+                    />
+                  </div>
+
+                  <div className="datetime-group">
+                    <DatePicker
+                      datePickerType="single"
+                      onChange={(dates) => {
+                        if (dates && dates.length > 0) {
+                          const date = dates[0];
+                          const year = date.getFullYear();
+                          const month = String(date.getMonth() + 1).padStart(2, '0');
+                          const day = String(date.getDate()).padStart(2, '0');
+                          const formatted = `${year}-${month}-${day}`;
+                          setEndDate(formatted);
+                        }
+                      }}
+                    >
+                      <DatePickerInput
+                        id="end-date"
+                        placeholder="yyyy-mm-dd"
+                        labelText="End Date"
+                        disabled={isDisabled}
+                      />
+                    </DatePicker>
+                    <TimePicker
+                      id="end-time"
+                      labelText="End Time"
+                      value={endTime}
+                      onChange={(e) => setEndTime(e.target.value)}
+                      disabled={isDisabled}
+                      pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
+                      placeholder="HH:MM"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {extractionMode === 'specific_ids' && (
+                <div className="specific-ids-container">
+                  <TextArea
+                    id="specific-ids"
+                    labelText="User IDs"
+                    helperText="Enter user IDs separated by commas, spaces, or new lines"
+                    placeholder="user1@example.com, user2@example.com&#10;user3@example.com"
+                    value={specificIds}
+                    onChange={(e) => setSpecificIds(e.target.value)}
+                    disabled={isDisabled}
+                    rows={8}
+                  />
+                </div>
+              )}
 
               <div className="button-container">
             <Button
@@ -478,7 +600,7 @@ function App() {
               kind="danger"
               renderIcon={StopFilled}
               onClick={handleStop}
-              disabled={!isProcessing}
+              disabled={!canStop}
             >
               Stop Extraction
             </Button>
@@ -500,9 +622,10 @@ function App() {
               <div className="status-row">
                 <span className="status-label">Status:</span>
                 {getStatusTag()}
+                {polling && <InlineLoading description="Updating..." style={{ marginLeft: '1rem' }} />}
               </div>
 
-              {status.status === 'under_processing' && (
+              {(status.status === 'under_processing' || isProcessing) && (
                 <>
                   <div className="status-row">
                     <span className="status-label">Current Month:</span>
@@ -685,27 +808,32 @@ function App() {
                         renderIcon={TrashCan}
                         onClick={() => handleDeleteHistory(entry.id)}
                         className="history-delete-btn"
-                        iconDescription="Delete"
-                        hasIconOnly
-                      />
+                      >
+                        Delete
+                      </Button>
                     </div>
                     <div className="history-item-details">
-                      <div className="history-detail">
-                        <span className="history-label">Date Range:</span>
-                        <span className="history-value">
-                          {entry.start_date} to {entry.end_date}
-                        </span>
-                      </div>
+                      {/* Only show Date Range and Months for date_range mode */}
+                      {(!entry.extraction_mode || entry.extraction_mode === 'date_range') && (
+                        <>
+                          <div className="history-detail">
+                            <span className="history-label">Date Range:</span>
+                            <span className="history-value">
+                              {entry.start_date} to {entry.end_date}
+                            </span>
+                          </div>
+                          <div className="history-detail">
+                            <span className="history-label">Months:</span>
+                            <span className="history-value">
+                              {entry.months_processed || 0}
+                            </span>
+                          </div>
+                        </>
+                      )}
                       <div className="history-detail">
                         <span className="history-label">Records:</span>
                         <span className="history-value">
                           {entry.records_processed?.toLocaleString() || 0}
-                        </span>
-                      </div>
-                      <div className="history-detail">
-                        <span className="history-label">Months:</span>
-                        <span className="history-value">
-                          {entry.months_processed || 0}
                         </span>
                       </div>
                       {entry.duration_seconds != null && entry.duration_seconds > 0 && (

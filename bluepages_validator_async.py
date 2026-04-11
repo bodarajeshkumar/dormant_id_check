@@ -81,8 +81,8 @@ async def process_batch(users: List[Dict], session: aiohttp.ClientSession,
     for user in users:
         email = user.get('email', '')
         
-        # Skip mail.test.*.ibm.com emails - treat them as "to be deleted"
-        if email and 'mail.test.' in email and email.endswith('.ibm.com'):
+        # Skip mail.test.*.ibm.com and malinator.com emails - treat them as "to be deleted"
+        if email and (('mail.test.' in email and email.endswith('.ibm.com')) or email.endswith('malinator.com')):
             # Don't check bluepages, automatically mark for deletion
             tasks.append((user, None))
         else:

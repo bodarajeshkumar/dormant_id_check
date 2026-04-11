@@ -32,7 +32,8 @@ class BluePagesError(Exception):
 
 
 async def validate_bluepages(
-    input_file: str,
+    input_file: Optional[str] = None,
+    users_data: Optional[List] = None,
     output_dir: str = "backend/resolutions",
     timestamp: Optional[str] = None,
     max_concurrent: int = 50,
@@ -45,7 +46,8 @@ async def validate_bluepages(
     a clean, pluggable interface for BluPages validation.
     
     Args:
-        input_file: Path to users JSON file (old login users)
+        input_file: Path to users JSON file (old login users) - optional if users_data provided
+        users_data: List of user dictionaries - optional if input_file provided
         output_dir: Directory to save output files
         timestamp: Optional timestamp string for filenames (auto-generated if None)
         max_concurrent: Maximum concurrent API requests
@@ -75,13 +77,19 @@ async def validate_bluepages(
     try:
         start_time = datetime.now()
         
-        # Validate input file exists
-        if not Path(input_file).exists():
-            raise BluePagesError(f"Input file not found: {input_file}")
-        
-        # Load users
-        with open(input_file, 'r') as f:
-            users = json.load(f)
+        # Load users from file or use provided data
+        if users_data is not None:
+            users = users_data
+        elif input_file is not None:
+            # Validate input file exists
+            if not Path(input_file).exists():
+                raise BluePagesError(f"Input file not found: {input_file}")
+            
+            # Load users
+            with open(input_file, 'r') as f:
+                users = json.load(f)
+        else:
+            raise BluePagesError("Either input_file or users_data must be provided")
         
         input_count = len(users)
         
@@ -93,7 +101,7 @@ async def validate_bluepages(
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
         # Create outputs directory for final results
-        outputs_dir = Path(output_dir).parent / "outputs"
+        outputs_dir = Path("backend/outputs")
         outputs_dir.mkdir(parents=True, exist_ok=True)
         
         # Create output file paths - final outputs go to outputs folder
@@ -103,9 +111,21 @@ async def validate_bluepages(
         # Use a temporary file for BluPages results
         temp_bluepages_file = Path(output_dir) / f"temp_bluepages_{timestamp}.json"
         
+        # If users_data provided, create a temporary input file in outputs directory
+        temp_input_file = None
+        if users_data is not None:
+            temp_input_file = outputs_dir / f"temp_input_{timestamp}.json"
+            with open(temp_input_file, 'w') as f:
+                json.dump(users, f, indent=2)
+            input_file_to_use: str = str(temp_input_file)
+        elif input_file is not None:
+            input_file_to_use = input_file
+        else:
+            raise BluePagesError("Either input_file or users_data must be provided")
+        
         # Run BluPages validation using existing async validator
         await validate_users_async(
-            input_file=input_file,
+            input_file=input_file_to_use,
             to_delete_file=str(to_delete_file),
             not_to_delete_file=str(temp_bluepages_file),  # Use temp file
             test_mode=False,
@@ -113,6 +133,10 @@ async def validate_bluepages(
             max_concurrent=max_concurrent,
             batch_size=batch_size
         )
+        
+        # Clean up temporary input file if created
+        if temp_input_file and temp_input_file.exists():
+            temp_input_file.unlink()
         
         # Append BluPages results to not_to_be_deleted.json
         bluepages_users = []
@@ -186,7 +210,8 @@ async def validate_bluepages(
 
 
 def validate_bluepages_sync(
-    input_file: str,
+    input_file: Optional[str] = None,
+    users_data: Optional[List] = None,
     output_dir: str = "backend/resolutions",
     timestamp: Optional[str] = None,
     max_concurrent: int = 50,
@@ -198,7 +223,12 @@ def validate_bluepages_sync(
     Use this when calling from non-async code.
     """
     return asyncio.run(validate_bluepages(
-        input_file, output_dir, timestamp, max_concurrent, batch_size
+        input_file=input_file,
+        users_data=users_data,
+        output_dir=output_dir,
+        timestamp=timestamp,
+        max_concurrent=max_concurrent,
+        batch_size=batch_size
     ))
 
 

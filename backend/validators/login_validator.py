@@ -113,7 +113,7 @@ def validate_last_login(
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
         # Create outputs directory for final results
-        outputs_dir = Path(output_dir).parent / "outputs"
+        outputs_dir = Path("backend/outputs")
         outputs_dir.mkdir(parents=True, exist_ok=True)
         
         # Create output file paths

@@ -23,6 +23,7 @@ from .isv_validator import validate_isv
 from .active_status_validator import validate_active_status
 from .login_validator import validate_last_login
 from .bluepages_validator import validate_bluepages
+from .decision_engine import consolidate_decisions
 
 
 class PipelineError(Exception):
@@ -209,6 +210,8 @@ async def run_validation_pipeline(
             
             for user in users:
                 email = user.get('email', '')
+                # Only IBM emails (ending with @ibm.com or .ibm.com) go to BluPages
+                # Exclude mail.test.*.ibm.com and malinator.com (already filtered in bluepages_validator_async.py)
                 if email.endswith('@ibm.com') or '.ibm.com' in email:
                     ibm_users.append(user)
                 else:
@@ -216,31 +219,27 @@ async def run_validation_pipeline(
             
             print(f"  IBM emails: {len(ibm_users)}, Non-IBM emails: {len(non_ibm_users)}")
             
-            # Save IBM users to temp file for BluPages check
-            ibm_users_file = Path(output_dir) / f"temp_ibm_users_{timestamp}.json"
-            with open(ibm_users_file, 'w') as f:
-                json.dump(ibm_users, f, indent=2)
-            
-            # Add non-IBM users directly to not_to_be_deleted (they can't be validated via BluPages)
+            # Add non-IBM users directly to to_be_deleted (per flowchart: remaining mails go to "To be deleted")
             if non_ibm_users:
-                outputs_dir = Path(output_dir).parent / "outputs"
+                # Use the same outputs directory structure
+                outputs_dir = Path("backend/outputs")
                 outputs_dir.mkdir(parents=True, exist_ok=True)
-                not_to_delete_file = outputs_dir / "not_to_be_deleted.json"
+                to_delete_file = outputs_dir / f"to_be_deleted_{timestamp}.json"
                 
-                if not_to_delete_file.exists():
-                    with open(not_to_delete_file, 'r') as f:
+                if to_delete_file.exists():
+                    with open(to_delete_file, 'r') as f:
                         existing = json.load(f)
                     existing.extend(non_ibm_users)
-                    with open(not_to_delete_file, 'w') as f:
+                    with open(to_delete_file, 'w') as f:
                         json.dump(existing, f, indent=2)
                 else:
-                    with open(not_to_delete_file, 'w') as f:
+                    with open(to_delete_file, 'w') as f:
                         json.dump(non_ibm_users, f, indent=2)
             
-            # Run BluPages validation only on IBM users
+            # Run BluPages validation only on IBM users - pass data directly
             if ibm_users:
                 result = await validate_bluepages(
-                    input_file=str(ibm_users_file),
+                    users_data=ibm_users,
                     output_dir=output_dir,
                     timestamp=timestamp,
                     max_concurrent=max_concurrent,
@@ -251,24 +250,23 @@ async def run_validation_pipeline(
                 
                 summary["found_in_bluepages"] = result["output"]["found_in_bluepages"]
                 summary["not_found_in_bluepages"] = result["output"]["not_found_in_bluepages"]
-                summary["to_delete"] = result["output"]["not_found_in_bluepages"]
-                summary["not_to_delete"] = result["output"]["found_in_bluepages"] + summary.get("recent_login", 0) + len(non_ibm_users)
+                # Non-IBM users + users not found in BluPages = to_delete
+                summary["to_delete"] = result["output"]["not_found_in_bluepages"] + len(non_ibm_users)
+                # Users found in BluPages + recent login users = not_to_delete
+                summary["not_to_delete"] = result["output"]["found_in_bluepages"] + summary.get("recent_login", 0)
                 
                 print(f"✓ BluPages Validation complete: {result['output']['found_in_bluepages']} found, {result['output']['not_found_in_bluepages']} not found")
-                
-                # Clean up temp file
-                ibm_users_file.unlink()
+                print(f"  Non-IBM emails marked for deletion: {len(non_ibm_users)}")
             else:
                 print(f"✓ No IBM users to validate via BluPages")
-                summary["to_delete"] = 0
-                summary["not_to_delete"] = len(non_ibm_users) + summary.get("recent_login", 0)
+                # All non-IBM users go to to_delete
+                summary["to_delete"] = len(non_ibm_users)
+                summary["not_to_delete"] = summary.get("recent_login", 0)
                 
-                # Create empty to_be_deleted file for consistency
-                outputs_dir = Path(output_dir).parent / "outputs"
+                # Non-IBM users already added to to_be_deleted file above
+                outputs_dir = Path("backend/outputs")
                 outputs_dir.mkdir(parents=True, exist_ok=True)
                 to_delete_file = outputs_dir / f"to_be_deleted_{timestamp}.json"
-                with open(to_delete_file, 'w') as f:
-                    json.dump([], f, indent=2)
                 
                 # Store result for final outputs
                 results["bluepages"] = {
@@ -318,8 +316,8 @@ async def run_validation_pipeline(
                 print(f"  {key}: {value}")
         print(f"{'='*70}\n")
         
-        # Return complete pipeline result
-        return {
+        # Build pipeline results for decision engine
+        pipeline_result = {
             "success": True,
             "pipeline": "validation_pipeline",
             "timestamp": end_time.isoformat(),
@@ -330,6 +328,44 @@ async def run_validation_pipeline(
             "summary": summary,
             "duration_seconds": int(duration)
         }
+        
+        # Run decision engine to consolidate all results into single JSON with timestamp
+        print(f"Running Decision Engine to consolidate results...")
+        decision_result = consolidate_decisions(
+            pipeline_results=pipeline_result,
+            timestamp=timestamp
+        )
+        
+        # Add decision engine output to pipeline result
+        pipeline_result["decision_output"] = decision_result["output_file"]
+        pipeline_result["decision_summary"] = decision_result["summary"]
+        
+        # Clean up intermediate files - keep only the final decision file
+        print(f"\nCleaning up intermediate files...")
+        files_to_remove = []
+        
+        # Collect all intermediate files from validation steps
+        for step_name, step_result in results.items():
+            if "files_created" in step_result:
+                for file_type, file_path in step_result["files_created"].items():
+                    if file_path and Path(file_path).exists():
+                        # Don't delete the final decision file
+                        if file_path != decision_result["output_file"]:
+                            files_to_remove.append(file_path)
+        
+        # Remove intermediate files
+        removed_count = 0
+        for file_path in files_to_remove:
+            try:
+                Path(file_path).unlink()
+                removed_count += 1
+            except Exception as e:
+                print(f"  Warning: Could not remove {file_path}: {e}")
+        
+        print(f"✓ Removed {removed_count} intermediate files")
+        print(f"✓ Final output: {decision_result['output_file']}\n")
+        
+        return pipeline_result
         
     except Exception as e:
         raise PipelineError(f"Pipeline execution failed: {str(e)}")

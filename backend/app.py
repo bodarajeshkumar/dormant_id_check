@@ -129,7 +129,7 @@ class HistoryManager:
 class ExtractorWrapper:
     """Wrapper for CloudantExtractor with status tracking"""
     
-    def __init__(self, start_date, end_date, filter_config=None, batch_size=3000):
+    def __init__(self, start_date, end_date, filter_config=None, batch_size=3000, user_ids=None, extraction_mode='date_range'):
         self.start_date = start_date
         self.end_date = end_date
         self.extractor = None
@@ -137,6 +137,8 @@ class ExtractorWrapper:
         self.filter_manager = None
         self.batch_size = batch_size
         self.stop_requested = False
+        self.user_ids = user_ids or []
+        self.extraction_mode = extraction_mode
         
     def calculate_total_months(self):
         """Calculate total months in date range"""
@@ -181,103 +183,151 @@ class ExtractorWrapper:
         self.output_file = output_path
         self.output_path = output_path  # Store for later use
         self.extracted_data = []
+        self.total_records_extracted = 0  # Track total records for specific_ids mode
         
         try:
-            # Parse dates with or without timestamp
-            try:
-                start = datetime.strptime(self.start_date, '%Y-%m-%d %H:%M:%S')
-            except ValueError:
+            if self.extraction_mode == 'specific_ids':
+                # Handle specific IDs extraction
+                total_ids = len(self.user_ids)
+                
+                # Update status to under_processing
+                StatusManager.update_status({
+                    'status': 'under_processing',
+                    'extraction_mode': 'specific_ids',
+                    'total_ids': total_ids,
+                    'records_processed': 0,
+                    'progress_percent': 0,
+                    'error': None,
+                    'start_time': start_time,
+                    'output_file': self.output_filename,
+                    'filters': self.filter_config
+                })
+                
+                # Initialize filter manager
+                self.filter_manager = FilterManager(self.filter_config)
+                logger.info(f"Filter configuration: {self.filter_config}")
+                logger.info(f"Enabled filters: {self.filter_manager.get_stats()['enabled_filters']}")
+                
+                # For specific IDs, we'll fetch them directly from Cloudant
+                # Store the IDs as extracted data
+                for idx, user_id in enumerate(self.user_ids):
+                    if self.stop_requested:
+                        raise InterruptedError("Extraction stopped by user")
+                    
+                    # Create a simple record with the user ID
+                    record = {'id': user_id, 'email': user_id}
+                    self.extracted_data.append(record)
+                    self.total_records_extracted += 1
+                    
+                    # Update progress
+                    progress = int(((idx + 1) / total_ids) * 100)
+                    StatusManager.update_status({
+                        'records_processed': idx + 1,
+                        'progress_percent': progress
+                    })
+                
+                # Set extraction successful flag
+                self.duration_seconds = int(time.time() - start_time)
+                self.extraction_successful = True
+                
+            else:
+                # Handle date range extraction (existing logic)
+                # Parse dates with or without timestamp
                 try:
-                    start = datetime.strptime(self.start_date, '%Y-%m-%d %H:%M')
+                    start = datetime.strptime(self.start_date, '%Y-%m-%d %H:%M:%S')
                 except ValueError:
-                    start = datetime.strptime(self.start_date, '%Y-%m-%d')
-            
-            try:
-                end = datetime.strptime(self.end_date, '%Y-%m-%d %H:%M:%S')
-            except ValueError:
+                    try:
+                        start = datetime.strptime(self.start_date, '%Y-%m-%d %H:%M')
+                    except ValueError:
+                        start = datetime.strptime(self.start_date, '%Y-%m-%d')
+                
                 try:
-                    end = datetime.strptime(self.end_date, '%Y-%m-%d %H:%M')
+                    end = datetime.strptime(self.end_date, '%Y-%m-%d %H:%M:%S')
                 except ValueError:
-                    end = datetime.strptime(self.end_date, '%Y-%m-%d')
+                    try:
+                        end = datetime.strptime(self.end_date, '%Y-%m-%d %H:%M')
+                    except ValueError:
+                        end = datetime.strptime(self.end_date, '%Y-%m-%d')
+                
+                # Calculate total months
+                total_months = self.calculate_total_months()
+                
+                # Update status to under_processing
+                StatusManager.update_status({
+                    'status': 'under_processing',
+                    'extraction_mode': 'date_range',
+                    'start_date': self.start_date,
+                    'end_date': self.end_date,
+                    'total_months': total_months,
+                    'completed_months': 0,
+                    'records_processed': 0,
+                    'progress_percent': 0,
+                    'current_month': f"{start.year}-{start.month:02d}",
+                    'error': None,
+                    'start_time': start_time,
+                    'output_file': self.output_filename,
+                    'filters': self.filter_config
+                })
             
-            # Calculate total months
-            total_months = self.calculate_total_months()
-            
-            # Update status to under_processing
-            StatusManager.update_status({
-                'status': 'under_processing',
-                'start_date': self.start_date,
-                'end_date': self.end_date,
-                'total_months': total_months,
-                'completed_months': 0,
-                'records_processed': 0,
-                'progress_percent': 0,
-                'current_month': f"{start.year}-{start.month:02d}",
-                'error': None,
-                'start_time': start_time,
-                'output_file': self.output_filename,
-                'filters': self.filter_config
-            })
-            
-            # Initialize filter manager
-            self.filter_manager = FilterManager(self.filter_config)
-            logger.info(f"Filter configuration: {self.filter_config}")
-            logger.info(f"Enabled filters: {self.filter_manager.get_stats()['enabled_filters']}")
-            
-            # Check if stop was requested before initialization
-            if self.stop_requested:
-                logger.warning("Stop requested before extractor initialization")
-                raise InterruptedError("Extraction stopped by user before starting")
-            
-            # Initialize extractor
-            username = os.getenv('CLOUDANT_USERNAME')
-            password = os.getenv('CLOUDANT_PASSWORD')
-            base_url = os.getenv('CLOUDANT_URL')
-            
-            if not all([username, password, base_url]):
-                raise Exception("Missing Cloudant credentials in environment variables")
-            
-            self.extractor = CloudantExtractorWithCallback(
-                base_url=base_url,
-                username=username,
-                password=password,
-                batch_size=self.batch_size,
-                status_callback=self.update_progress,
-                data_storage_callback=self.store_batch_data,
-                total_months=total_months
-            )
-            
-            # Check again after initialization
-            if self.stop_requested:
-                logger.warning("Stop requested after extractor initialization")
-                self.extractor.request_stop()
-            
-            # Create session and run extraction
-            await self.extractor.create_session()
-            
-            # Run extraction with full date/time range
-            await self.extractor.extract_date_range(
-                start_year=start.year,
-                start_month=start.month,
-                end_year=end.year,
-                end_month=end.month,
-                start_day=start.day,
-                start_hour=start.hour,
-                start_minute=start.minute,
-                end_day=end.day,
-                end_hour=end.hour,
-                end_minute=end.minute
-            )
+                # Initialize filter manager
+                self.filter_manager = FilterManager(self.filter_config)
+                logger.info(f"Filter configuration: {self.filter_config}")
+                logger.info(f"Enabled filters: {self.filter_manager.get_stats()['enabled_filters']}")
+                
+                # Check if stop was requested before initialization
+                if self.stop_requested:
+                    logger.warning("Stop requested before extractor initialization")
+                    raise InterruptedError("Extraction stopped by user before starting")
+                
+                # Initialize extractor
+                username = os.getenv('CLOUDANT_USERNAME')
+                password = os.getenv('CLOUDANT_PASSWORD')
+                base_url = os.getenv('CLOUDANT_URL')
+                
+                if not all([username, password, base_url]):
+                    raise Exception("Missing Cloudant credentials in environment variables")
+                
+                self.extractor = CloudantExtractorWithCallback(
+                    base_url=base_url,
+                    username=username,
+                    password=password,
+                    batch_size=self.batch_size,
+                    status_callback=self.update_progress,
+                    data_storage_callback=self.store_batch_data,
+                    total_months=total_months
+                )
+                
+                # Check again after initialization
+                if self.stop_requested:
+                    logger.warning("Stop requested after extractor initialization")
+                    self.extractor.request_stop()
+                
+                # Create session and run extraction
+                await self.extractor.create_session()
+                
+                # Run extraction with full date/time range
+                await self.extractor.extract_date_range(
+                    start_year=start.year,
+                    start_month=start.month,
+                    end_year=end.year,
+                    end_month=end.month,
+                    start_day=start.day,
+                    start_hour=start.hour,
+                    start_minute=start.minute,
+                    end_day=end.day,
+                    end_hour=end.hour,
+                    end_minute=end.minute
+                )
 
-            print(f"DEBUG: extraction done. records={self.extractor.total_records_processed}, months={self.extractor.months_processed}, batches={self.extractor.total_batches_processed}", flush=True)
-            
-            # Calculate duration
-            end_time = time.time()
-            duration_seconds = int(end_time - start_time)
-            
-            # Store duration for later use
-            self.duration_seconds = duration_seconds
-            self.extraction_successful = True
+                print(f"DEBUG: extraction done. records={self.extractor.total_records_processed}, months={self.extractor.months_processed}, batches={self.extractor.total_batches_processed}", flush=True)
+                
+                # Calculate duration
+                end_time = time.time()
+                duration_seconds = int(end_time - start_time)
+                
+                # Store duration for later use
+                self.duration_seconds = duration_seconds
+                self.extraction_successful = True
             
         except InterruptedError as e:
             # Handle user-requested stop
@@ -349,8 +399,8 @@ class ExtractorWrapper:
                 self.finalize_output_file()
             
             # Run validation pipeline AFTER file is finalized
-            logger.info(f"Finally block: extraction_successful={hasattr(self, 'extraction_successful')}, value={getattr(self, 'extraction_successful', None)}")
-            if hasattr(self, 'extraction_successful') and self.extraction_successful:
+            logger.info(f"Finally block: extraction_successful={hasattr(self, 'extraction_successful')}, value={getattr(self, 'extraction_successful', None)}, stop_requested={self.stop_requested}")
+            if hasattr(self, 'extraction_successful') and self.extraction_successful and not self.stop_requested:
                 logger.info("Running validation pipeline...")
                 try:
                     await self._run_validation_pipeline(self.output_path)
@@ -358,6 +408,8 @@ class ExtractorWrapper:
                 except Exception as e:
                     logger.error(f"Validation pipeline failed: {e}", exc_info=True)
                     # Continue to mark as finished even if validation fails
+            elif self.stop_requested:
+                logger.info("Skipping validation pipeline because extraction was stopped")
                 
                 # Mark as finished (successful completion) - AFTER validation completes
                 logger.info("Updating status to finished...")
@@ -374,14 +426,15 @@ class ExtractorWrapper:
                     'id': datetime.now().strftime('%Y%m%d_%H%M%S'),
                     'start_date': self.start_date,
                     'end_date': self.end_date,
-                    'records_processed': self.extractor.total_records_processed if self.extractor else 0,
+                    'records_processed': self.extractor.total_records_processed if self.extractor else self.total_records_extracted,
                     'months_processed': self.extractor.months_processed if self.extractor else 0,
                     'status': 'completed',
                     'error': None,
                     'timestamp': datetime.now().isoformat(),
                     'duration_seconds': self.duration_seconds,
                     'filename': self.output_filename,
-                    'filters': self.filter_config
+                    'filters': self.filter_config,
+                    'extraction_mode': self.extraction_mode
                 })
                 logger.info("Status update and history entry complete!")
             
@@ -621,7 +674,7 @@ class ExtractorWrapper:
                 input_file=extraction_file,
                 output_dir=output_dir,
                 checks=checks,
-                days_threshold=1065,  # 3 years
+                days_threshold=1095,  # 3 years
                 max_concurrent=int(os.getenv('MAX_CONCURRENT', '50')),
                 batch_size=int(os.getenv('RESOLUTION_BATCH_SIZE', '100'))
             )
@@ -757,6 +810,8 @@ def get_filters():
 @app.route('/api/retrieve', methods=['POST'])
 def start_retrieval():
     """Start data retrieval job"""
+    global current_extractor
+    
     try:
         # Check current status
         current_status = StatusManager.load_status()
@@ -769,8 +824,7 @@ def start_retrieval():
         
         # Get request data
         data = request.get_json()
-        start_date = data.get('start_date')
-        end_date = data.get('end_date')
+        extraction_mode = data.get('extraction_mode', 'date_range')
         filters = data.get('filters', {})  # Get filter configuration
         batch_size = data.get('batch_size', 3000)  # Get batch size, default 3000
         
@@ -788,55 +842,101 @@ def start_retrieval():
                 'error': 'Invalid batch size'
             }), 400
         
-        # Validate input
-        if not start_date or not end_date:
-            return jsonify({
-                'success': False,
-                'error': 'start_date and end_date are required'
-            }), 400
-        
-        # Validate date format (supports YYYY-MM-DD, YYYY-MM-DD HH:MM, and YYYY-MM-DD HH:MM:SS)
-        try:
-            # Try parsing with full timestamp first
+        # Handle different extraction modes
+        if extraction_mode == 'date_range':
+            start_date = data.get('start_date')
+            end_date = data.get('end_date')
+            
+            # Validate input
+            if not start_date or not end_date:
+                return jsonify({
+                    'success': False,
+                    'error': 'start_date and end_date are required for date range extraction'
+                }), 400
+            
+            # Validate date format (supports YYYY-MM-DD, YYYY-MM-DD HH:MM, and YYYY-MM-DD HH:MM:SS)
             try:
-                start_dt = datetime.strptime(start_date, '%Y-%m-%d %H:%M:%S')
-                end_dt = datetime.strptime(end_date, '%Y-%m-%d %H:%M:%S')
-            except ValueError:
+                # Try parsing with full timestamp first
                 try:
-                    # Try HH:MM format (append :00 for seconds)
-                    start_dt = datetime.strptime(start_date, '%Y-%m-%d %H:%M')
-                    end_dt = datetime.strptime(end_date, '%Y-%m-%d %H:%M')
-                    # Update the date strings to include seconds for consistency
-                    start_date = start_dt.strftime('%Y-%m-%d %H:%M:%S')
-                    end_date = end_dt.strftime('%Y-%m-%d %H:%M:%S')
+                    start_dt = datetime.strptime(start_date, '%Y-%m-%d %H:%M:%S')
+                    end_dt = datetime.strptime(end_date, '%Y-%m-%d %H:%M:%S')
                 except ValueError:
-                    # Fall back to date-only format
-                    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-                    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-        except ValueError:
+                    try:
+                        # Try HH:MM format (append :00 for seconds)
+                        start_dt = datetime.strptime(start_date, '%Y-%m-%d %H:%M')
+                        end_dt = datetime.strptime(end_date, '%Y-%m-%d %H:%M')
+                        # Update the date strings to include seconds for consistency
+                        start_date = start_dt.strftime('%Y-%m-%d %H:%M:%S')
+                        end_date = end_dt.strftime('%Y-%m-%d %H:%M:%S')
+                    except ValueError:
+                        # Fall back to date-only format
+                        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                        end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+            except ValueError:
+                return jsonify({
+                    'success': False,
+                    'error': 'Invalid date format. Use YYYY-MM-DD, YYYY-MM-DD HH:MM, or YYYY-MM-DD HH:MM:SS'
+                }), 400
+            
+            # Create extractor wrapper with filter configuration and batch size
+            wrapper = ExtractorWrapper(start_date, end_date, filter_config=filters, batch_size=batch_size)
+            
+            # Store reference to wrapper for stop functionality
+            with current_extractor_lock:
+                current_extractor = wrapper
+            
+            # Start extraction in background thread
+            thread = threading.Thread(target=wrapper.run, daemon=True)
+            thread.start()
+            
+            return jsonify({
+                'success': True,
+                'message': 'Data retrieval started successfully',
+                'extraction_mode': 'date_range',
+                'start_date': start_date,
+                'end_date': end_date
+            })
+            
+        elif extraction_mode == 'specific_ids':
+            user_ids = data.get('user_ids', [])
+            
+            # Validate input
+            if not user_ids or not isinstance(user_ids, list) or len(user_ids) == 0:
+                return jsonify({
+                    'success': False,
+                    'error': 'user_ids array is required and must contain at least one ID'
+                }), 400
+            
+            # Create extractor wrapper for specific IDs
+            wrapper = ExtractorWrapper(
+                start_date=None,
+                end_date=None,
+                filter_config=filters,
+                batch_size=batch_size,
+                user_ids=user_ids,
+                extraction_mode='specific_ids'
+            )
+            
+            # Store reference to wrapper for stop functionality
+            with current_extractor_lock:
+                current_extractor = wrapper
+            
+            # Start extraction in background thread
+            thread = threading.Thread(target=wrapper.run, daemon=True)
+            thread.start()
+            
+            return jsonify({
+                'success': True,
+                'message': 'Data retrieval started successfully',
+                'extraction_mode': 'specific_ids',
+                'user_count': len(user_ids)
+            })
+        
+        else:
             return jsonify({
                 'success': False,
-                'error': 'Invalid date format. Use YYYY-MM-DD, YYYY-MM-DD HH:MM, or YYYY-MM-DD HH:MM:SS'
+                'error': f'Invalid extraction_mode: {extraction_mode}. Must be "date_range" or "specific_ids"'
             }), 400
-        
-        # Create extractor wrapper with filter configuration and batch size
-        wrapper = ExtractorWrapper(start_date, end_date, filter_config=filters, batch_size=batch_size)
-        
-        # Store reference to wrapper for stop functionality
-        global current_extractor
-        with current_extractor_lock:
-            current_extractor = wrapper
-        
-        # Start extraction in background thread
-        thread = threading.Thread(target=wrapper.run, daemon=True)
-        thread.start()
-        
-        return jsonify({
-            'success': True,
-            'message': 'Data retrieval started successfully',
-            'start_date': start_date,
-            'end_date': end_date
-        })
         
     except Exception as e:
         return jsonify({
@@ -1107,9 +1207,9 @@ def delete_history_entry(history_id):
     Delete a history entry and all its associated files.
     
     Deletes files from:
-    - backend/extractions/ (extraction file)
-    - backend/resolutions/ (all files with matching timestamp)
-    - backend/outputs/ (all files with matching timestamp)
+    - backend/backend/extractions/ (extraction file)
+    - backend/backend/resolutions/ (all files with matching timestamp)
+    - backend/backend/outputs/ (all files with matching timestamp)
     """
     try:
         # Load history
@@ -1133,109 +1233,82 @@ def delete_history_entry(history_id):
         deleted_files = []
         failed_files = []
         
-        # 1. Delete extraction file
-        extraction_filename = entry.get('filename')
-        if extraction_filename:
-            extraction_path = os.path.join('backend', 'extractions', extraction_filename)
-            if os.path.exists(extraction_path):
-                try:
-                    os.remove(extraction_path)
-                    deleted_files.append(extraction_path)
-                except Exception as e:
-                    failed_files.append({'file': extraction_path, 'error': str(e)})
-        
-        # 2. Delete all files in resolutions/ with matching timestamp
-        # Extract timestamp from history_id (format: YYYYMMDD_HHMMSS)
+        # Extract timestamp from filename (format: extraction_YYYYMMDD_HHMMSS.json -> YYYYMMDD_HHMMSS)
         extraction_filename = entry.get('filename', '')
         if extraction_filename:
             # e.g. extraction_20260407_162814.json -> 20260407_162814
-            timestamp = extraction_filename.replace('extraction_', '').replace('.json', '')
+            full_timestamp = extraction_filename.replace('extraction_', '').replace('.json', '')
         else:
-            timestamp = history_id  # fallback
+            full_timestamp = history_id  # fallback to history_id
         
-        logger.info(f"Using timestamp from extraction filename: {timestamp}")
+        # Use a partial timestamp match (YYYYMMDD_HHMM) to catch files created within the same minute
+        # This handles cases where validation pipeline creates files a few seconds after extraction
+        timestamp_prefix = full_timestamp[:13] if len(full_timestamp) >= 13 else full_timestamp  # YYYYMMDD_HHMM
+        
+        print(f"=== DELETE OPERATION START ===")
+        print(f"History ID: {history_id}")
+        print(f"Full timestamp: {full_timestamp}")
+        print(f"Timestamp prefix for matching: {timestamp_prefix}")
+        print(f"Entry: {entry}")
         logger.info(f"=== DELETE OPERATION START ===")
         logger.info(f"History ID: {history_id}")
-        logger.info(f"Searching for files with timestamp: {timestamp}")
-        logger.info(f"Entry details: {entry}")
+        logger.info(f"Full timestamp: {full_timestamp}")
+        logger.info(f"Timestamp prefix for matching: {timestamp_prefix}")
+        logger.info(f"Entry: {entry}")
         
-        resolutions_dir = os.path.join('backend','backend', 'resolutions')
-        if os.path.exists(resolutions_dir):
-            logger.info(f"Checking resolutions directory: {resolutions_dir}")
-            for filename in os.listdir(resolutions_dir):
-                if timestamp in filename:
-                    file_path = os.path.join(resolutions_dir, filename)
-                    logger.info(f"Found matching file in resolutions: {filename}")
-                    try:
-                        if os.path.isfile(file_path):
-                            os.remove(file_path)
-                            deleted_files.append(file_path)
-                            logger.info(f"Deleted: {file_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to delete {file_path}: {e}")
-                        failed_files.append({'file': file_path, 'error': str(e)})
-        else:
-            logger.warning(f"Resolutions directory does not exist: {resolutions_dir}")
+        # Define all directories to check (relative to backend directory where Flask runs)
+        directories_to_check = [
+            ('backend/extractions', 'extractions'),
+            ('backend/resolutions', 'resolutions'),
+            ('backend/outputs', 'outputs')
+        ]
         
-        # 3. Delete all files in outputs/ with matching timestamp
-        outputs_dir = os.path.join('backend','backend', 'outputs')
-        if os.path.exists(outputs_dir):
-            logger.info(f"Checking outputs directory: {outputs_dir}")
-            for filename in os.listdir(outputs_dir):
-                if timestamp in filename:
-                    file_path = os.path.join(outputs_dir, filename)
-                    logger.info(f"Found matching file in outputs: {filename}")
-                    try:
-                        if os.path.isfile(file_path):
-                            os.remove(file_path)
-                            deleted_files.append(file_path)
-                            logger.info(f"Deleted: {file_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to delete {file_path}: {e}")
-                        failed_files.append({'file': file_path, 'error': str(e)})
-        else:
-            logger.warning(f"Outputs directory does not exist: {outputs_dir}")
+        # Delete files from all directories
+        for dir_path, dir_name in directories_to_check:
+            if os.path.exists(dir_path):
+                print(f"Checking {dir_name} directory: {dir_path}")
+                logger.info(f"Checking {dir_name} directory: {dir_path}")
+                try:
+                    files_in_dir = os.listdir(dir_path)
+                    print(f"Files in {dir_name}: {files_in_dir}")
+                    for filename in files_in_dir:
+                        # Match files containing the timestamp prefix (matches files within same minute)
+                        if timestamp_prefix in filename:
+                            file_path = os.path.join(dir_path, filename)
+                            print(f"Found matching file in {dir_name}: {filename}")
+                            logger.info(f"Found matching file in {dir_name}: {filename}")
+                            try:
+                                if os.path.isfile(file_path):
+                                    print(f"Attempting to delete: {file_path}")
+                                    os.remove(file_path)
+                                    deleted_files.append(file_path)
+                                    print(f"✓ Deleted: {file_path}")
+                                    logger.info(f"✓ Deleted: {file_path}")
+                            except Exception as e:
+                                print(f"✗ Failed to delete {file_path}: {e}")
+                                logger.error(f"✗ Failed to delete {file_path}: {e}")
+                                failed_files.append({'file': file_path, 'error': str(e)})
+                except Exception as e:
+                    print(f"Error scanning {dir_name} directory: {e}")
+                    logger.error(f"Error scanning {dir_name} directory: {e}")
+                    failed_files.append({'directory': dir_path, 'error': str(e)})
+            else:
+                print(f"{dir_name} directory does not exist: {dir_path}")
+                logger.warning(f"{dir_name} directory does not exist: {dir_path}")
         
-        # 4. Delete all files in backend/backend/resolutions/ with matching timestamp
-        backend_resolutions_dir = os.path.join('backend', 'backend', 'resolutions')
-        if os.path.exists(backend_resolutions_dir):
-            logger.info(f"Checking backend/backend/resolutions directory: {backend_resolutions_dir}")
-            for filename in os.listdir(backend_resolutions_dir):
-                if timestamp in filename:
-                    file_path = os.path.join(backend_resolutions_dir, filename)
-                    logger.info(f"Found matching file in backend/backend/resolutions: {filename}")
-                    try:
-                        if os.path.isfile(file_path):
-                            os.remove(file_path)
-                            deleted_files.append(file_path)
-                            logger.info(f"Deleted: {file_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to delete {file_path}: {e}")
-                        failed_files.append({'file': file_path, 'error': str(e)})
-        
-        # 5. Delete all files in backend/backend/outputs/ with matching timestamp
-        backend_outputs_dir = os.path.join('backend', 'backend', 'outputs')
-        if os.path.exists(backend_outputs_dir):
-            logger.info(f"Checking backend/backend/outputs directory: {backend_outputs_dir}")
-            for filename in os.listdir(backend_outputs_dir):
-                if timestamp in filename:
-                    file_path = os.path.join(backend_outputs_dir, filename)
-                    logger.info(f"Found matching file in backend/backend/outputs: {filename}")
-                    try:
-                        if os.path.isfile(file_path):
-                            os.remove(file_path)
-                            deleted_files.append(file_path)
-                            logger.info(f"Deleted: {file_path}")
-                    except Exception as e:
-                        logger.error(f"Failed to delete {file_path}: {e}")
-                        failed_files.append({'file': file_path, 'error': str(e)})
-        
+        print(f"=== DELETE OPERATION COMPLETE ===")
+        print(f"Total files deleted: {len(deleted_files)}")
+        print(f"Total files failed: {len(failed_files)}")
+        print(f"Deleted files: {deleted_files}")
+        print(f"Failed files: {failed_files}")
+        logger.info(f"=== DELETE OPERATION COMPLETE ===")
         logger.info(f"Total files deleted: {len(deleted_files)}")
         logger.info(f"Total files failed: {len(failed_files)}")
         
         # Remove entry from history
-        history.pop(entry_index)
-        HistoryManager.save_history(history)
+        if entry_index is not None:
+            history.pop(entry_index)
+            HistoryManager.save_history(history)
         
         return jsonify({
             'success': True,
@@ -1247,6 +1320,7 @@ def delete_history_entry(history_id):
         })
         
     except Exception as e:
+        logger.error(f"Error in delete_history_entry: {e}", exc_info=True)
         return jsonify({
             'success': False,
             'error': str(e)
@@ -1528,7 +1602,7 @@ def validate_last_login_endpoint():
     Request body:
     {
         "input_file": "backend/resolutions/isv_active_users_*.json",
-        "days_threshold": 1065,
+        "days_threshold": 1095,
         "output_dir": "backend/resolutions",
         "timestamp": "20260406_100000",
         "append_recent": true
@@ -1537,7 +1611,7 @@ def validate_last_login_endpoint():
     try:
         data = request.get_json()
         input_file = data.get('input_file')
-        days_threshold = data.get('days_threshold', 1065)
+        days_threshold = data.get('days_threshold', 1095)
         output_dir = data.get('output_dir', 'backend/resolutions')
         timestamp = data.get('timestamp')
         append_recent = data.get('append_recent', True)
@@ -1619,7 +1693,7 @@ async def validate_pipeline_endpoint():
             "last_login": true,
             "bluepages": true
         },
-        "days_threshold": 1065,
+        "days_threshold": 1095,
         "max_concurrent": 50,
         "batch_size": 100
     }
@@ -1629,7 +1703,7 @@ async def validate_pipeline_endpoint():
         input_file = data.get('input_file')
         output_dir = data.get('output_dir', 'backend/resolutions')
         checks = data.get('checks')
-        days_threshold = data.get('days_threshold', 1065)
+        days_threshold = data.get('days_threshold', 1095)
         max_concurrent = data.get('max_concurrent', 50)
         batch_size = data.get('batch_size', 100)
         
