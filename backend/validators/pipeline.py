@@ -16,7 +16,7 @@ Each step uses the output from the previous step.
 import json
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Callable
 import asyncio
 
 from .isv_validator import validate_isv
@@ -37,7 +37,8 @@ async def run_validation_pipeline(
     checks: Optional[Dict[str, bool]] = None,
     days_threshold: int = 1065,
     max_concurrent: int = 10,
-    batch_size: int = 100
+    batch_size: int = 100,
+    status_callback: Optional[Callable] = None
 ) -> Dict:
     """
     Run the complete validation pipeline with selected checks.
@@ -143,6 +144,8 @@ async def run_validation_pipeline(
         # Step 1: ISV Validation
         if checks.get("isv_validation", False):
             print(f"[1/4] Running ISV Validation...")
+            if status_callback:
+                status_callback("ISV Validation", "running")
             result = await validate_isv(
                 input_file=current_file,
                 output_dir=output_dir,
@@ -158,10 +161,14 @@ async def run_validation_pipeline(
             # Use resolved file for next step
             current_file = result["files_created"]["resolved"]
             print(f"✓ ISV Validation complete: {result['output']['found_in_isv']} found, {result['output']['not_found_in_isv']} not found\n")
+            if status_callback:
+                status_callback("ISV Validation", "completed")
         
         # Step 2: Active Status Check
         if checks.get("active_status", False):
             print(f"[2/4] Running Active Status Check...")
+            if status_callback:
+                status_callback("Dormancy Check", "running")
             result = validate_active_status(
                 input_file=current_file,
                 output_dir=output_dir,
@@ -176,10 +183,14 @@ async def run_validation_pipeline(
             # Use active file for next step
             current_file = result["files_created"]["active"]
             print(f"✓ Active Status Check complete: {result['output']['active']} active, {result['output']['inactive']} inactive\n")
+            if status_callback:
+                status_callback("Dormancy Check", "completed")
         
         # Step 3: Last Login Check
         if checks.get("last_login", False):
             print(f"[3/4] Running Last Login Check...")
+            if status_callback:
+                status_callback("Last Login Check", "running")
             result = validate_last_login(
                 input_file=current_file,
                 days_threshold=days_threshold,
@@ -196,10 +207,14 @@ async def run_validation_pipeline(
             # Use old login file for BluPages check
             current_file = result["files_created"]["old_login"]
             print(f"✓ Last Login Check complete: {result['output']['old_login']} old (>{days_threshold} days), {result['output']['recent_login']} recent\n")
+            if status_callback:
+                status_callback("Last Login Check", "completed")
         
         # Step 4: BluPages Validation
         if checks.get("bluepages", False):
             print(f"[4/4] Filtering IBM emails and running BluPages Validation...")
+            if status_callback:
+                status_callback("BluPages Validation", "running")
             
             # Filter to only @ibm.com or *.ibm.com emails before BluPages
             with open(current_file, 'r') as f:
@@ -222,7 +237,7 @@ async def run_validation_pipeline(
             # Add non-IBM users directly to to_be_deleted (per flowchart: remaining mails go to "To be deleted")
             if non_ibm_users:
                 # Use the same outputs directory structure
-                outputs_dir = Path("backend/outputs")
+                outputs_dir = Path("backend/backend/outputs")
                 outputs_dir.mkdir(parents=True, exist_ok=True)
                 to_delete_file = outputs_dir / f"to_be_deleted_{timestamp}.json"
                 
@@ -257,14 +272,18 @@ async def run_validation_pipeline(
                 
                 print(f"✓ BluPages Validation complete: {result['output']['found_in_bluepages']} found, {result['output']['not_found_in_bluepages']} not found")
                 print(f"  Non-IBM emails marked for deletion: {len(non_ibm_users)}")
+                if status_callback:
+                    status_callback("BluPages Validation", "completed")
             else:
                 print(f"✓ No IBM users to validate via BluPages")
+                if status_callback:
+                    status_callback("BluPages Validation", "completed")
                 # All non-IBM users go to to_delete
                 summary["to_delete"] = len(non_ibm_users)
                 summary["not_to_delete"] = summary.get("recent_login", 0)
                 
                 # Non-IBM users already added to to_be_deleted file above
-                outputs_dir = Path("backend/outputs")
+                outputs_dir = Path("backend/backend/outputs")
                 outputs_dir.mkdir(parents=True, exist_ok=True)
                 to_delete_file = outputs_dir / f"to_be_deleted_{timestamp}.json"
                 

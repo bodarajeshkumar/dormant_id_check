@@ -402,26 +402,52 @@ class ExtractorWrapper:
             logger.info(f"Finally block: extraction_successful={hasattr(self, 'extraction_successful')}, value={getattr(self, 'extraction_successful', None)}, stop_requested={self.stop_requested}")
             if hasattr(self, 'extraction_successful') and self.extraction_successful and not self.stop_requested:
                 logger.info("Running validation pipeline...")
+                # Update status to show validation is starting
+                StatusManager.update_status({
+                    'status': 'validating',
+                    'current_step': 'Starting validation pipeline',
+                    'validation_progress': {
+                        'extraction': 'completed',
+                        'isv_validation': 'pending',
+                        'dormancy_check': 'pending',
+                        'last_login_check': 'pending',
+                        'bluepages_check': 'pending'
+                    }
+                })
                 try:
-                    await self._run_validation_pipeline(self.output_path)
+                    validation_result = await self._run_validation_pipeline(self.output_path)
                     logger.info("Validation pipeline completed successfully")
+                    # Store the decision file path if available
+                    if validation_result and validation_result.get('decision_output'):
+                        self.decision_file = os.path.basename(validation_result['decision_output'])
+                        logger.info(f"Decision file: {self.decision_file}")
                 except Exception as e:
                     logger.error(f"Validation pipeline failed: {e}", exc_info=True)
                     # Continue to mark as finished even if validation fails
             elif self.stop_requested:
                 logger.info("Skipping validation pipeline because extraction was stopped")
-                
-                # Mark as finished (successful completion) - AFTER validation completes
+            
+            # Mark as finished (successful completion) - AFTER validation completes
+            # This runs for both successful completion and stopped extraction
+            if hasattr(self, 'extraction_successful') and self.extraction_successful:
                 logger.info("Updating status to finished...")
-                StatusManager.update_status({
+                # Preserve validation_progress when transitioning to finished
+                current_status = StatusManager.load_status()
+                update_data = {
                     'status': 'finished',
                     'error': None,
                     'duration_seconds': self.duration_seconds,
                     'filters': self.filter_config
-                })
+                }
+                # Keep validation_progress if it exists
+                if 'validation_progress' in current_status:
+                    update_data['validation_progress'] = current_status['validation_progress']
+                StatusManager.update_status(update_data)
                 
                 # Add to history
                 logger.info("Adding to history...")
+                # Use decision file if available, otherwise use extraction file
+                output_file = getattr(self, 'decision_file', self.output_filename)
                 HistoryManager.add_history_entry({
                     'id': datetime.now().strftime('%Y%m%d_%H%M%S'),
                     'start_date': self.start_date,
@@ -432,11 +458,11 @@ class ExtractorWrapper:
                     'error': None,
                     'timestamp': datetime.now().isoformat(),
                     'duration_seconds': self.duration_seconds,
-                    'filename': self.output_filename,
+                    'filename': output_file,
                     'filters': self.filter_config,
                     'extraction_mode': self.extraction_mode
                 })
-                logger.info("Status update and history entry complete!")
+                logger.info(f"Status update and history entry complete! Output file: {output_file}")
             
             if self.extractor:
                 await self.extractor.close()
@@ -566,8 +592,7 @@ class ExtractorWrapper:
             from ibm_users_resolution_async import IBMUsersResolverAsync
 
             timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-            output_dir = os.path.join('backend', 'resolutions')
-            os.makedirs(output_dir, exist_ok=True)
+            output_dir = os.path.join('backend', 'backend', 'outputs')
             resolved_file = os.path.join(output_dir, f'resolved_users_{timestamp}.json')
             failed_file = os.path.join(output_dir, f'failed_ids_{timestamp}.json')
 
@@ -667,13 +692,50 @@ class ExtractorWrapper:
             logger.info(f"Starting validation pipeline with checks: {list(checks.keys())}")
             
             # Run the validation pipeline
-            output_dir = os.path.join('backend', 'resolutions')
-            os.makedirs(output_dir, exist_ok=True)
+            output_dir = os.path.join('backend', 'backend', 'outputs')
+            
+            # Create status update callback
+            def update_validation_status(step, step_status):
+                """Callback to update status during validation"""
+                # Map step names to validation_progress keys
+                # Note: Using keys that match the initial validation_progress structure
+                step_mapping = {
+                    'ISV Validation': 'isv_validation',
+                    'Dormancy Check': 'dormancy_check',
+                    'Last Login Check': 'last_login_check',
+                    'BluPages Validation': 'bluepages_check'  # Changed to match initial structure
+                }
+                
+                # Get current status to preserve validation_progress
+                current_status = StatusManager.load_status()
+                validation_progress = current_status.get('validation_progress', {
+                    'extraction': 'completed',
+                    'isv_validation': 'pending',
+                    'dormancy_check': 'pending',
+                    'last_login_check': 'pending',
+                    'bluepages_check': 'pending'  # Changed to match initial structure
+                })
+                
+                # Update the specific step status
+                progress_key = step_mapping.get(step)
+                if progress_key:
+                    if step_status == 'running':
+                        validation_progress[progress_key] = 'running'
+                    elif step_status == 'completed':
+                        validation_progress[progress_key] = 'completed'
+                
+                StatusManager.update_status({
+                    'status': 'validating',
+                    'current_step': step,
+                    'validation_step_status': step_status,
+                    'validation_progress': validation_progress
+                })
             
             result = await validators.run_validation_pipeline(
                 input_file=extraction_file,
                 output_dir=output_dir,
                 checks=checks,
+                status_callback=update_validation_status,
                 days_threshold=1095,  # 3 years
                 max_concurrent=int(os.getenv('MAX_CONCURRENT', '50')),
                 batch_size=int(os.getenv('RESOLUTION_BATCH_SIZE', '100'))
@@ -682,11 +744,14 @@ class ExtractorWrapper:
             if result.get('success'):
                 logger.info(f"Validation pipeline completed successfully")
                 logger.info(f"Summary: {result.get('summary', {})}")
+                return result
             else:
                 logger.error(f"Validation pipeline failed: {result.get('error')}")
+                return None
                 
         except Exception as e:
             logger.error(f"Validation pipeline error: {e}", exc_info=True)
+            return None
 
 
 
@@ -1042,13 +1107,21 @@ def _get_extraction_file_path(filename):
     if not filename.endswith('.json'):
         return None, 'Invalid file type'
     
-    # Check extraction directory
-    file_path = os.path.join('backend', 'extractions', filename)
+    # Get absolute path to backend directory
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
     
-    if not os.path.exists(file_path):
-        return None, 'File not found'
+    # Check only the correct directories (using absolute paths)
+    directories = [
+        os.path.join(backend_dir, 'backend', 'outputs'),  # Decision and output files
+        os.path.join(backend_dir, 'backend', 'extractions'),  # Extraction files
+    ]
     
-    return file_path, None
+    for directory in directories:
+        file_path = os.path.join(directory, filename)
+        if os.path.exists(file_path):
+            return file_path, None
+    
+    return None, 'File not found'
 
 
 @app.route('/api/download/<filename>', methods=['GET'])
@@ -1080,7 +1153,7 @@ def download_file(filename):
 
 @app.route('/api/view/<filename>', methods=['GET'])
 def view_file(filename):
-    """View extraction file with pagination"""
+    """View extraction file - returns full JSON structure"""
     try:
         file_path, error = _get_extraction_file_path(filename)
         
@@ -1090,41 +1163,14 @@ def view_file(filename):
                 'error': error or 'File not found'
             }), 404 if error == 'File not found' else 400
         
-        # Get pagination parameters
-        page = request.args.get('page', 1, type=int)
-        page_size = request.args.get('page_size', 100, type=int)
-        
-        # Validate pagination parameters
-        if page < 1:
-            page = 1
-        if page_size < 1 or page_size > 1000:
-            page_size = 100
-        
         # Read and parse JSON file
         with open(file_path, 'r') as f:
             data = json.load(f)
         
-        # Calculate pagination
-        total_records = len(data)
-        total_pages = (total_records + page_size - 1) // page_size
-        start_idx = (page - 1) * page_size
-        end_idx = start_idx + page_size
-        
-        # Get page data
-        page_data = data[start_idx:end_idx]
-        
-        return jsonify({
-            'success': True,
-            'data': page_data,
-            'pagination': {
-                'page': page,
-                'page_size': page_size,
-                'total_records': total_records,
-                'total_pages': total_pages,
-                'has_next': page < total_pages,
-                'has_prev': page > 1
-            }
-        })
+        # Return the full data structure
+        # If it's a decision file, it will have categories (to_be_deleted, not_to_be_deleted, etc.)
+        # If it's an extraction file, it will be an array
+        return jsonify(data)
         
     except Exception as e:
         logger.error(f"Error viewing file: {e}")
@@ -1250,17 +1296,23 @@ def delete_history_entry(history_id):
         print(f"Full timestamp: {full_timestamp}")
         print(f"Timestamp prefix for matching: {timestamp_prefix}")
         print(f"Entry: {entry}")
+        print(f"Current working directory: {os.getcwd()}")
         logger.info(f"=== DELETE OPERATION START ===")
         logger.info(f"History ID: {history_id}")
         logger.info(f"Full timestamp: {full_timestamp}")
         logger.info(f"Timestamp prefix for matching: {timestamp_prefix}")
         logger.info(f"Entry: {entry}")
+        logger.info(f"Current working directory: {os.getcwd()}")
         
-        # Define all directories to check (relative to backend directory where Flask runs)
+        # Get absolute path to backend directory
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        print(f"Backend directory: {backend_dir}")
+        logger.info(f"Backend directory: {backend_dir}")
+        
+        # Define all directories to check (using absolute paths)
         directories_to_check = [
-            ('backend/extractions', 'extractions'),
-            ('backend/resolutions', 'resolutions'),
-            ('backend/outputs', 'outputs')
+            (os.path.join(backend_dir, 'backend', 'extractions'), 'extractions'),
+            (os.path.join(backend_dir, 'backend', 'outputs'), 'outputs')
         ]
         
         # Delete files from all directories
@@ -1321,6 +1373,112 @@ def delete_history_entry(history_id):
         
     except Exception as e:
         logger.error(f"Error in delete_history_entry: {e}", exc_info=True)
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+
+@app.route('/api/history/clear-all', methods=['DELETE'])
+def clear_all_history():
+    """
+    Clear all history entries and delete all associated files.
+    """
+    try:
+        # Load history
+        history = HistoryManager.load_history()
+        
+        if not history:
+            return jsonify({
+                'success': True,
+                'message': 'No history to clear'
+            })
+        
+        files_deleted_count = 0
+        files_failed_count = 0
+        entries_processed = 0
+        
+        # Get absolute path to backend directory
+        backend_dir = os.path.dirname(os.path.abspath(__file__))
+        directories = [
+            os.path.join(backend_dir, 'backend', 'extractions'),
+            os.path.join(backend_dir, 'backend', 'outputs')
+        ]
+        
+        print(f"=== CLEAR ALL OPERATION START ===")
+        print(f"Backend directory: {backend_dir}")
+        print(f"Directories to check: {directories}")
+        print(f"Total history entries: {len(history)}")
+        logger.info(f"=== CLEAR ALL OPERATION START ===")
+        logger.info(f"Backend directory: {backend_dir}")
+        logger.info(f"Directories to check: {directories}")
+        logger.info(f"Total history entries: {len(history)}")
+        
+        # Delete all files for each entry
+        for entry in history:
+            try:
+                # Use the ID from history entry which matches the timestamp in filenames
+                entry_id = entry.get('id', '')
+                print(f"Processing entry ID: {entry_id}")
+                logger.info(f"Processing entry ID: {entry_id}")
+                
+                if entry_id:
+                    # Use prefix matching (YYYYMMDD_HHMM) to catch files created within same minute
+                    # This handles cases where file timestamp differs by a few seconds from history entry
+                    timestamp_prefix = entry_id[:13] if len(entry_id) >= 13 else entry_id  # YYYYMMDD_HHMM
+                    print(f"Using timestamp prefix for matching: {timestamp_prefix}")
+                    logger.info(f"Using timestamp prefix for matching: {timestamp_prefix}")
+                    
+                    # Delete files from all directories
+                    for directory in directories:
+                        if os.path.exists(directory):
+                            print(f"Checking directory: {directory}")
+                            files_in_dir = os.listdir(directory)
+                            print(f"Files in directory: {files_in_dir}")
+                            for filename in files_in_dir:
+                                if timestamp_prefix in filename:
+                                    file_path = os.path.join(directory, filename)
+                                    print(f"Found matching file: {filename}")
+                                    logger.info(f"Found matching file: {filename}")
+                                    try:
+                                        os.remove(file_path)
+                                        print(f"✓ Deleted: {file_path}")
+                                        logger.info(f"✓ Deleted: {file_path}")
+                                        files_deleted_count += 1
+                                    except Exception as e:
+                                        print(f"✗ Failed to delete {file_path}: {e}")
+                                        logger.warning(f"✗ Failed to delete {file_path}: {e}")
+                                        files_failed_count += 1
+                        else:
+                            print(f"Directory does not exist: {directory}")
+                            logger.warning(f"Directory does not exist: {directory}")
+                
+                entries_processed += 1
+                
+            except Exception as e:
+                print(f"Error processing entry: {e}")
+                logger.error(f"Error deleting files for entry {entry.get('id')}: {e}")
+        
+        print(f"=== CLEAR ALL OPERATION COMPLETE ===")
+        print(f"Entries processed: {entries_processed}")
+        print(f"Files deleted: {files_deleted_count}")
+        print(f"Files failed: {files_failed_count}")
+        
+        # Clear the history file
+        HistoryManager.save_history([])
+        
+        logger.info(f"Cleared all history: {entries_processed} entries, {files_deleted_count} files deleted, {files_failed_count} files failed")
+        
+        return jsonify({
+            'success': True,
+            'message': f'Cleared {entries_processed} history entries and {files_deleted_count} files',
+            'entries_cleared': entries_processed,
+            'files_deleted': files_deleted_count,
+            'files_failed': files_failed_count
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in clear_all_history: {e}", exc_info=True)
         return jsonify({
             'success': False,
             'error': str(e)

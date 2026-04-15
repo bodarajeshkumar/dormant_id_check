@@ -27,7 +27,7 @@ import {
   RadioButton,
   TextArea
 } from '@carbon/react';
-import { Renew, Download, StopFilled, TrashCan } from '@carbon/icons-react';
+import { Renew, Download, StopFilled, TrashCan, View } from '@carbon/icons-react';
 import axios from 'axios';
 import './App.scss';
 
@@ -53,8 +53,7 @@ function App() {
   const [viewPagination, setViewPagination] = useState(null);
   const [viewFilename, setViewFilename] = useState('');
   const [viewLoading, setViewLoading] = useState(false);
-  const [extractions, setExtractions] = useState([]);
-  const [loadingExtractions, setLoadingExtractions] = useState(false);
+  const [finalDuration, setFinalDuration] = useState(null);
 
   // Fetch status from API
   const fetchStatus = useCallback(async () => {
@@ -65,18 +64,29 @@ function App() {
       
       // Update status state
       setStatus(prevStatus => {
-        // If transitioning from under_processing to finished/stopped/failed,
-        // stop polling immediately
-        if (prevStatus?.status === 'under_processing' &&
-            newStatus.status !== 'under_processing') {
+        // If transitioning from processing/validating to finished/stopped/failed,
+        // stop polling immediately and capture final duration
+        if ((prevStatus?.status === 'under_processing' || prevStatus?.status === 'validating') &&
+            (newStatus.status === 'finished' || newStatus.status === 'stopped' || newStatus.status === 'failed')) {
           console.log('Status transition detected, stopping polling');
           setPolling(false);
+          
+          // Capture final duration when transitioning to finished
+          if (newStatus.status === 'finished') {
+            if (newStatus.duration_seconds) {
+              setFinalDuration(newStatus.duration_seconds);
+            } else if (newStatus.end_time && newStatus.start_time) {
+              setFinalDuration(newStatus.end_time - newStatus.start_time);
+            } else if (newStatus.start_time) {
+              setFinalDuration(Math.floor(Date.now() / 1000 - newStatus.start_time));
+            }
+          }
         }
         return newStatus;
       });
       
-      // Start polling if under processing, stop if not
-      if (newStatus.status === 'under_processing') {
+      // Start polling if under processing or validating, stop if finished/stopped/failed
+      if (newStatus.status === 'under_processing' || newStatus.status === 'validating') {
         setPolling(true);
       } else if (newStatus.status === 'finished' || newStatus.status === 'stopped' || newStatus.status === 'failed') {
         setPolling(false);
@@ -100,21 +110,6 @@ function App() {
       }
     } catch (error) {
       console.error('Error fetching history:', error);
-    }
-  }, []);
-
-  // Fetch extractions from API
-  const fetchExtractions = useCallback(async () => {
-    setLoadingExtractions(true);
-    try {
-      const response = await axios.get(`${API_BASE_URL}/extractions`);
-      if (response.data.success) {
-        setExtractions(response.data.extractions);
-      }
-    } catch (error) {
-      console.error('Error fetching extractions:', error);
-    } finally {
-      setLoadingExtractions(false);
     }
   }, []);
 
@@ -187,12 +182,62 @@ function App() {
     }
   };
 
+  // Handle clear all history
+  const handleClearAllHistory = async () => {
+    if (!window.confirm('Are you sure you want to delete ALL extraction history and associated files? This action cannot be undone.')) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${API_BASE_URL}/history/clear-all`, {
+        method: 'DELETE',
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        setNotification({
+          kind: 'success',
+          title: 'History Cleared',
+          subtitle: data.message || `Cleared ${data.entries_cleared || 0} history entries and ${data.files_deleted || 0} files`,
+        });
+        // Refresh history
+        fetchHistory();
+      } else {
+        setNotification({
+          kind: 'error',
+          title: 'Clear Failed',
+          subtitle: data.error || 'Failed to clear history',
+        });
+      }
+    } catch (error) {
+      console.error('Error clearing history:', error);
+      setNotification({
+        kind: 'error',
+        title: 'Clear Error',
+        subtitle: error.message,
+      });
+    }
+  };
+
   // Fetch available filters
   const fetchFilters = useCallback(async () => {
     try {
       const response = await axios.get(`${API_BASE_URL}/filters`);
       if (response.data.success) {
         setAvailableFilters(response.data.filters);
+        
+        // Set default selected filters (ISV Validation, Dormancy Check, Federated ID removal)
+        const defaultFilters = {};
+        response.data.filters.forEach(filter => {
+          // Check if filter ID matches the default ones
+          if (filter.id === 'isv_validation' ||
+              filter.id === 'dormancy_check' ||
+              filter.id === 'federated_id_removal') {
+            defaultFilters[filter.id] = true;
+          }
+        });
+        setSelectedFilters(defaultFilters);
       }
     } catch (error) {
       console.error('Error fetching filters:', error);
@@ -265,13 +310,12 @@ function App() {
     }
   };
 
-  // Initial status, history, filters, and extractions fetch
+  // Initial status, history, and filters fetch
   useEffect(() => {
     fetchStatus();
     fetchHistory();
     fetchFilters();
-    fetchExtractions();
-  }, [fetchStatus, fetchHistory, fetchFilters, fetchExtractions]);
+  }, [fetchStatus, fetchHistory, fetchFilters]);
 
   // Polling effect
   useEffect(() => {
@@ -361,6 +405,7 @@ function App() {
           title: 'Success',
           subtitle: 'Data retrieval started successfully'
         });
+        setFinalDuration(null); // Reset final duration for new extraction
         setPolling(true);
         fetchStatus();
         fetchHistory(); // Refresh history
@@ -440,6 +485,7 @@ function App() {
     const statusConfig = {
       not_started: { type: 'gray', text: 'Not Started' },
       under_processing: { type: 'blue', text: 'Processing' },
+      validating: { type: 'blue', text: 'Validating' },
       stopped: { type: 'purple', text: 'Stopped' },
       finished: {
         type: status.error ? 'red' : 'green',
@@ -456,7 +502,7 @@ function App() {
     );
   };
 
-  const isProcessing = status?.status === 'under_processing';
+  const isProcessing = status?.status === 'under_processing' || status?.status === 'validating';
   const isDisabled = isProcessing || loading;
   const canStop = isProcessing || loading || polling;
 
@@ -586,8 +632,48 @@ function App() {
                   />
                 </div>
               )}
+        </AccordionItem>
 
-              <div className="button-container">
+        <AccordionItem title="Extraction Settings" open>
+          <div className="extraction-settings-batch">
+            <NumberInput
+              id="batch-size"
+              label="Batch Size"
+              helperText="Number of records per batch (1000-5000 recommended)"
+              min={100}
+              max={10000}
+              step={100}
+              value={batchSize}
+              onChange={(e, { value }) => setBatchSize(value)}
+              disabled={isDisabled}
+              invalidText="Batch size must be between 100 and 10000"
+            />
+          </div>
+
+          <div className="extraction-settings-filters">
+            <h4 className="filters-subtitle">Data Filters</h4>
+            <p className="filters-description">
+              Select validation checks to apply during extraction
+            </p>
+            <div className="filters-container">
+              {availableFilters.map((filter) => (
+                <Checkbox
+                  key={filter.id}
+                  id={filter.id}
+                  labelText={filter.name}
+                  checked={selectedFilters[filter.id] || false}
+                  onChange={(e) => handleFilterChange(filter.id, e.target.checked)}
+                  disabled={isDisabled}
+                  helperText={filter.description}
+                />
+              ))}
+            </div>
+            {availableFilters.length === 0 && (
+              <p className="no-filters">Loading filters...</p>
+            )}
+          </div>
+
+          <div className="button-container">
             <Button
               kind="primary"
               onClick={handleSubmit}
@@ -625,48 +711,92 @@ function App() {
                 {polling && <InlineLoading description="Updating..." style={{ marginLeft: '1rem' }} />}
               </div>
 
-              {(status.status === 'under_processing' || isProcessing) && (
+              {(status.status === 'under_processing' || status.status === 'validating' || status.status === 'finished' || isProcessing) && (
                 <>
-                  <div className="status-row">
-                    <span className="status-label">Current Month:</span>
-                    <span className="status-value">{status.current_month || 'N/A'}</span>
-                  </div>
+                  {status.status === 'under_processing' && (
+                    <>
+                      <div className="status-row">
+                        <span className="status-label">Current Month:</span>
+                        <span className="status-value">{status.current_month || 'N/A'}</span>
+                      </div>
+
+                      <div className="status-row">
+                        <span className="status-label">Records Processed:</span>
+                        <span className="status-value">
+                          {status.records_processed?.toLocaleString() || 0}
+                        </span>
+                      </div>
+
+                      <div className="status-row">
+                        <span className="status-label">Months Completed:</span>
+                        <span className="status-value">
+                          {status.completed_months || 0} / {status.total_months || 0}
+                        </span>
+                      </div>
+                    </>
+                  )}
 
                   <div className="status-row">
-                    <span className="status-label">Records Processed:</span>
+                    <span className="status-label">{status.status === 'finished' ? 'Total Duration:' : 'Elapsed Time:'}</span>
                     <span className="status-value">
-                      {status.records_processed?.toLocaleString() || 0}
-                    </span>
-                  </div>
-
-                  <div className="status-row">
-                    <span className="status-label">Months Completed:</span>
-                    <span className="status-value">
-                      {status.completed_months || 0} / {status.total_months || 0}
-                    </span>
-                  </div>
-
-                  {status.start_time && (
-                    <div className="status-row">
-                      <span className="status-label">Elapsed Time:</span>
-                      <span className="status-value">
-                        {(() => {
+                      {status.status === 'finished' && finalDuration !== null ? (
+                        (() => {
+                          const minutes = Math.floor(finalDuration / 60);
+                          const seconds = finalDuration % 60;
+                          return finalDuration >= 60 ? `${minutes}m ${seconds}s` : `${finalDuration}s`;
+                        })()
+                      ) : status.start_time ? (
+                        (() => {
                           const elapsed = Math.floor(Date.now() / 1000 - status.start_time);
                           const minutes = Math.floor(elapsed / 60);
                           const seconds = elapsed % 60;
                           return elapsed >= 60 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-                        })()}
-                      </span>
-                    </div>
-                  )}
+                        })()
+                      ) : 'N/A'}
+                    </span>
+                  </div>
 
-                  <div className="progress-container">
-                    <ProgressBar
-                      label="Progress"
-                      value={status.progress_percent || 0}
-                      max={100}
-                      helperText={`${status.progress_percent || 0}% complete`}
-                    />
+                  <div className="progress-stepper">
+                    <h4>Pipeline Progress:</h4>
+                    <div className="stepper-container">
+                      {[
+                        { key: 'extraction', label: 'Extraction' },
+                        { key: 'isv_validation', label: 'ISV Validation' },
+                        { key: 'dormancy_check', label: 'Dormancy Check' },
+                        { key: 'last_login_check', label: 'Last Login' },
+                        { key: 'bluepages_check', label: 'BluPages' }
+                      ].map((step, index, array) => {
+                        // Determine step status
+                        let stepStatus = 'pending';
+                        
+                        if (step.key === 'extraction') {
+                          if (status.status === 'under_processing') {
+                            stepStatus = 'running';
+                          } else if (status.status === 'validating' || status.status === 'finished') {
+                            stepStatus = 'completed';
+                          }
+                        } else if (status.validation_progress) {
+                          stepStatus = status.validation_progress[step.key] || 'pending';
+                        } else if (status.status === 'finished') {
+                          // If finished and no validation_progress, mark all as completed
+                          stepStatus = 'completed';
+                        }
+                        
+                        return (
+                          <React.Fragment key={step.key}>
+                            <div className={`stepper-step ${stepStatus === 'completed' ? 'completed' : stepStatus === 'running' ? 'active' : 'pending'}`}>
+                              <div className="step-circle">
+                                {stepStatus === 'completed' ? '✓' : index + 1}
+                              </div>
+                              <div className="step-label">{step.label}</div>
+                            </div>
+                            {index < array.length - 1 && (
+                              <div className={`stepper-line ${stepStatus === 'completed' ? 'completed' : ''}`} />
+                            )}
+                          </React.Fragment>
+                        );
+                      })}
+                    </div>
                   </div>
                 </>
               )}
@@ -679,17 +809,6 @@ function App() {
                       {status.records_processed?.toLocaleString() || 0}
                     </span>
                   </div>
-                  {status.duration_seconds != null && status.duration_seconds > 0 && (
-                    <div className="status-row">
-                      <span className="status-label">Duration:</span>
-                      <span className="status-value">
-                        {status.duration_seconds >= 60
-                          ? `${Math.floor(status.duration_seconds / 60)}m ${status.duration_seconds % 60}s`
-                          : `${status.duration_seconds}s`
-                        }
-                      </span>
-                    </div>
-                  )}
                   {status.batch_size && (
                     <div className="status-row">
                       <span className="status-label">Batch Size:</span>
@@ -710,6 +829,7 @@ function App() {
                       </span>
                     </div>
                   )}
+                  
                   {status.output_file && (
                     <div className="status-row">
                       <Button
@@ -764,175 +884,97 @@ function App() {
             <Loading description="Loading status..." />
           )}
         </AccordionItem>
+      </Accordion>
+        </div>
 
-        <AccordionItem title="Extraction History">
-          {history.length > 0 ? (
-            <div className="history-container">
-              <p className="history-description">
-                View past extraction jobs and download their data files.
-              </p>
+        {/* Right sidebar with extraction history */}
+        <div className="history-sidebar">
+          <div className="history-sidebar-header">
+            <h2>Extraction History</h2>
+            {history.length > 0 && (
+              <Button
+                kind="danger--tertiary"
+                size="sm"
+                onClick={handleClearAllHistory}
+              >
+                Clear All
+              </Button>
+            )}
+          </div>
+          <div className="history-sidebar-content">
+            {history.length > 0 ? (
               <div className="history-list">
-                {history.map((entry) => (
+                {history.map((entry, index) => (
                   <div key={entry.id} className="history-item">
-                    <div className="history-item-header">
-                      <Tag type={entry.status === 'completed' ? 'green' : 'red'}>
-                        {entry.status}
-                      </Tag>
-                      <span className="history-timestamp">
-                        {new Date(entry.timestamp).toLocaleString()}
-                      </span>
-                      {entry.status === 'completed' && entry.filename && (
-                        <>
-                          <Button
-                            kind="ghost"
-                            size="sm"
-                            renderIcon={Download}
-                            onClick={() => handleDownload(entry.filename)}
-                            className="history-download-btn"
-                          >
-                            Download
-                          </Button>
-                          <Button
-                            kind="ghost"
-                            size="sm"
-                            onClick={() => handleViewData(entry.filename)}
-                            className="history-download-btn"
-                          >
-                            View Data
-                          </Button>
-                        </>
-                      )}
+                    <div className="history-job-id">EX{String(history.length - index).padStart(3, '0')}</div>
+                    <div className="history-timestamp">
+                      {new Date(entry.timestamp).toLocaleString()}
+                    </div>
+                    <div className="history-item-details">
+                      <div className="history-detail">
+                        <span className="history-label">Extraction Mode</span>
+                        <span className="history-value">
+                          {entry.extraction_mode === 'specific_ids' ? 'Specific IDs' : 'Date Range (ISV, Dormancy)'}
+                        </span>
+                      </div>
+                      <div className="history-detail">
+                        <span className="history-label">Records</span>
+                        <span className="history-value">
+                          {entry.records_processed?.toLocaleString() || 0}
+                        </span>
+                      </div>
+                      <div className="history-detail">
+                        <span className="history-label">Status</span>
+                        <span className="history-value">
+                          <Tag type={entry.status === 'completed' ? 'green' : 'red'}>
+                            {entry.status === 'completed' ? 'Completed' : entry.error ? 'Failed (Network Error)' : 'Failed'}
+                          </Tag>
+                        </span>
+                      </div>
+                    </div>
+                    <div className="history-item-actions">
+                      <Button
+                        kind="ghost"
+                        size="sm"
+                        renderIcon={View}
+                        onClick={() => {
+                          if (entry.filename) {
+                            window.open(`/view?file=${encodeURIComponent(entry.filename)}`, '_blank');
+                          }
+                        }}
+                        iconDescription="View"
+                        disabled={!entry.filename}
+                        hasIconOnly
+                      />
+                      <Button
+                        kind="ghost"
+                        size="sm"
+                        renderIcon={Download}
+                        onClick={() => entry.filename && handleDownload(entry.filename)}
+                        iconDescription="Download"
+                        disabled={!entry.filename}
+                        hasIconOnly
+                      />
                       <Button
                         kind="danger--ghost"
                         size="sm"
                         renderIcon={TrashCan}
                         onClick={() => handleDeleteHistory(entry.id)}
-                        className="history-delete-btn"
-                      >
-                        Delete
-                      </Button>
-                    </div>
-                    <div className="history-item-details">
-                      {/* Only show Date Range and Months for date_range mode */}
-                      {(!entry.extraction_mode || entry.extraction_mode === 'date_range') && (
-                        <>
-                          <div className="history-detail">
-                            <span className="history-label">Date Range:</span>
-                            <span className="history-value">
-                              {entry.start_date} to {entry.end_date}
-                            </span>
-                          </div>
-                          <div className="history-detail">
-                            <span className="history-label">Months:</span>
-                            <span className="history-value">
-                              {entry.months_processed || 0}
-                            </span>
-                          </div>
-                        </>
-                      )}
-                      <div className="history-detail">
-                        <span className="history-label">Records:</span>
-                        <span className="history-value">
-                          {entry.records_processed?.toLocaleString() || 0}
-                        </span>
-                      </div>
-                      {entry.duration_seconds != null && entry.duration_seconds > 0 && (
-                        <div className="history-detail">
-                          <span className="history-label">Duration:</span>
-                          <span className="history-value">
-                            {entry.duration_seconds >= 60
-                              ? `${Math.floor(entry.duration_seconds / 60)}m ${entry.duration_seconds % 60}s`
-                              : `${entry.duration_seconds}s`
-                            }
-                          </span>
-                        </div>
-                      )}
-                      {entry.batch_size && (
-                        <div className="history-detail">
-                          <span className="history-label">Batch Size:</span>
-                          <span className="history-value">{entry.batch_size}</span>
-                        </div>
-                      )}
-                      {entry.filters && Object.keys(entry.filters).some(k => entry.filters[k]) && (
-                        <div className="history-detail">
-                          <span className="history-label">Filters:</span>
-                          <span className="history-value">
-                            {Object.keys(entry.filters)
-                              .filter(k => entry.filters[k])
-                              .map(filterId => {
-                                const filter = availableFilters.find(f => f.id === filterId);
-                                return filter ? filter.name : filterId;
-                              })
-                              .join(', ')}
-                          </span>
-                        </div>
-                      )}
-                      {entry.filename && (
-                        <div className="history-detail">
-                          <span className="history-label">File:</span>
-                          <span className="history-value">{entry.filename}</span>
-                        </div>
-                      )}
-                      {entry.error && (
-                        <div className="history-detail error">
-                          <span className="history-label">Error:</span>
-                          <span className="history-value">{entry.error}</span>
-                        </div>
-                      )}
+                        iconDescription="Delete"
+                        hasIconOnly
+                      />
                     </div>
                   </div>
                 ))}
               </div>
-            </div>
-          ) : (
-            <div className="empty-history">
-              <p>📋 No extraction history yet</p>
-              <p className="empty-history-subtitle">
-                Start your first extraction to see it here
-              </p>
-            </div>
-          )}
-        </AccordionItem>
-      </Accordion>
-        </div>
-
-        {/* Right sidebar with configuration options */}
-        <div className="config-sidebar">
-          <div className="batch-size-section">
-            <NumberInput
-              id="batch-size"
-              label="Batch Size"
-              helperText="Number of records to fetch per batch (1000-5000 recommended)"
-              min={100}
-              max={10000}
-              step={100}
-              value={batchSize}
-              onChange={(e, { value }) => setBatchSize(value)}
-              disabled={isDisabled}
-              invalidText="Batch size must be between 100 and 10000"
-            />
-          </div>
-
-          <div className="filters-section">
-            <h4 className="filters-title">Data Filtering Options</h4>
-            <p className="filters-description">
-              Select which filters to apply during extraction. Only records passing all selected filters will be included.
-            </p>
-            <div className="filters-container">
-              {availableFilters.map((filter) => (
-                <Checkbox
-                  key={filter.id}
-                  id={filter.id}
-                  labelText={filter.name}
-                  checked={selectedFilters[filter.id] || false}
-                  onChange={(e) => handleFilterChange(filter.id, e.target.checked)}
-                  disabled={isDisabled}
-                  helperText={filter.description}
-                />
-              ))}
-            </div>
-            {availableFilters.length === 0 && (
-              <p className="no-filters">Loading filters...</p>
+            ) : (
+              <div className="empty-history">
+                <p>📋</p>
+                <p>No extraction history yet</p>
+                <p className="empty-history-subtitle">
+                  Start your first extraction to see it here
+                </p>
+              </div>
             )}
           </div>
         </div>

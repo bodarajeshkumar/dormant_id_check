@@ -1,0 +1,76 @@
+@use '@carbon/react/scss/spacing' as *;
+@use '@carbon/react/scss/theme' as *;
+
+.view-data-container {
+  min-height: 100vh;
+  background-color: $layer-01;
+  padding: $spacing-06;
+
+  .view-data-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: $spacing-06;
+    padding-bottom: $spacing-05;
+    border-bottom: 1px solid $border-subtle-01;
+
+    .header-left {
+      display: flex;
+      align-items: center;
+      gap: $spacing-05;
+
+      h1 {
+        font-size: 1.75rem;
+        font-weight: 600;
+        margin: 0;
+        color: $text-primary;
+      }
+    }
+  }
+
+  .cds--tabs {
+    margin-bottom: $spacing-05;
+  }
+
+  .cds--tab {
+    display: flex;
+    align-items: center;
+    gap: $spacing-03;
+  }
+
+  .table-container {
+    background-color: $layer-02;
+    border-radius: 4px;
+    padding: $spacing-05;
+
+    .cds--data-table-container {
+      background-color: transparent;
+    }
+
+    .cds--table-toolbar {
+      background-color: transparent;
+    }
+
+    .cds--data-table {
+      background-color: $layer-01;
+
+      th {
+        background-color: $layer-02;
+        font-weight: 600;
+      }
+
+      td {
+        vertical-align: top;
+        padding: $spacing-04;
+      }
+    }
+
+    .cds--pagination {
+      background-color: transparent;
+      border-top: 1px solid $border-subtle-01;
+      margin-top: $spacing-05;
+    }
+  }
+}
+
+// Made with Bob

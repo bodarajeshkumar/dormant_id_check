@@ -115,7 +115,7 @@ async def validate_isv(
         resolved_file = Path(output_dir) / f"isv_resolved_users_{timestamp}.json"
         
         # Failed IDs go to outputs directory (always created even if empty)
-        outputs_dir = Path("backend/outputs")
+        outputs_dir = Path("backend/backend/outputs")
         outputs_dir.mkdir(parents=True, exist_ok=True)
         failed_file = outputs_dir / f"isv_failed_ids_{timestamp}.json"
         

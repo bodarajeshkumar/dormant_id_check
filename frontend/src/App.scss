@@ -2,6 +2,115 @@
 @use '@carbon/react/scss/theme' as *;
 @use '@carbon/react/scss/breakpoint' as *;
 
+// Progress Stepper styles
+.progress-stepper {
+  margin-top: $spacing-03;
+  padding: $spacing-03;
+  background-color: $layer-02;
+  border-radius: 4px;
+  
+  h4 {
+    font-size: 0.875rem;
+    font-weight: 600;
+    margin-bottom: $spacing-05;
+    color: $text-primary;
+  }
+}
+
+.stepper-container {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: $spacing-04 0;
+}
+
+.stepper-step {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: $spacing-03;
+  flex: 0 0 auto;
+  
+  .step-circle {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: 600;
+    font-size: 1rem;
+    transition: all 0.3s ease;
+    background-color: $layer-01;
+    border: 2px solid $border-subtle-01;
+    color: $text-secondary;
+  }
+  
+  .step-label {
+    font-size: 0.75rem;
+    color: $text-secondary;
+    text-align: center;
+    max-width: 80px;
+  }
+  
+  &.completed {
+    .step-circle {
+      background-color: #0f62fe;
+      border-color: #0f62fe;
+      color: white;
+    }
+    
+    .step-label {
+      color: $text-primary;
+      font-weight: 500;
+    }
+  }
+  
+  &.active {
+    .step-circle {
+      background-color: #0f62fe;
+      border-color: #0f62fe;
+      color: white;
+      animation: pulse 2s infinite;
+    }
+    
+    .step-label {
+      color: $text-primary;
+      font-weight: 600;
+    }
+  }
+  
+  &.pending {
+    .step-circle {
+      background-color: $layer-01;
+      border-color: $border-subtle-01;
+      color: $text-secondary;
+    }
+  }
+}
+
+.stepper-line {
+  flex: 1;
+  height: 2px;
+  background-color: $border-subtle-01;
+  margin: 0 $spacing-03;
+  position: relative;
+  top: -12px;
+  
+  &.completed {
+    background-color: #0f62fe;
+  }
+}
+
+@keyframes pulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(15, 98, 254, 0.7);
+  }
+  50% {
+    box-shadow: 0 0 0 10px rgba(15, 98, 254, 0);
+  }
+}
+
 .app-container {
   max-width: 1400px;
   margin: 0 auto;
@@ -26,16 +135,16 @@
   }
 }
 
-// Main layout with sidebar
+// Main layout with history sidebar on right
 .main-layout {
   display: grid;
-  grid-template-columns: 1fr 300px;
-  gap: $spacing-07;
+  grid-template-columns: 1fr 400px;
+  gap: $spacing-06;
   align-items: start;
   
   @include breakpoint-down(lg) {
-    grid-template-columns: 1fr 260px;
-    gap: $spacing-06;
+    grid-template-columns: 1fr 350px;
+    gap: $spacing-05;
   }
   
   @include breakpoint-down(md) {
@@ -44,22 +153,46 @@
   }
 }
 
-.config-sidebar {
+// History sidebar (right side)
+.history-sidebar {
   display: flex;
   flex-direction: column;
-  gap: $spacing-05;
-  padding: $spacing-06;
   background-color: $layer-02;
   border-radius: 8px;
   border: 1px solid $border-subtle-01;
-  height: fit-content;
+  height: calc(100vh - 200px);
   position: sticky;
   top: $spacing-05;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
   
   @include breakpoint-down(md) {
     position: static;
+    height: auto;
+    max-height: 600px;
     order: 2;
+  }
+  
+  .history-sidebar-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: $spacing-05 $spacing-06;
+    border-bottom: 1px solid $border-subtle-01;
+    background-color: $layer-01;
+    
+    h2 {
+      font-size: 1.25rem;
+      font-weight: 600;
+      margin: 0;
+      color: $text-primary;
+    }
+  }
+  
+  .history-sidebar-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: $spacing-04;
   }
 }
 
@@ -77,6 +210,7 @@
     background-color: transparent;
   }
 }
+
 
 .date-picker-container {
   display: grid;
@@ -131,11 +265,78 @@
   }
 }
 
-.batch-size-section {
-  margin-bottom: $spacing-05;
-  
+// Extraction Settings Section
+.extraction-settings-batch {
+  margin-bottom: $spacing-06;
+  max-width: 400px;
+
   .cds--number-input {
     width: 100%;
+  }
+
+  .cds--label {
+    font-weight: 600;
+    font-size: 0.875rem;
+    margin-bottom: $spacing-03;
+    color: $text-primary;
+  }
+
+  // Make the input box WHITE with light border
+  .cds--number-input__input-wrapper {
+    background-color: #FFFFFF;
+    border: 1px solid #E0E0E0;
+    border-radius: 4px;
+
+    &:hover {
+      background-color: #FFFFFF;
+    }
+
+    &:focus-within {
+      outline: 2px solid #0F62FE;
+      outline-offset: -2px;
+    }
+  }
+
+  .cds--number input[type='number'] {
+    background-color: #FFFFFF;
+    color: $text-primary;
+
+    &:focus {
+      background-color: #FFFFFF;
+    }
+
+    &:disabled {
+      background-color: #F4F4F4;
+      color: $text-disabled;
+    }
+  }
+
+  .cds--number__controls {
+    background-color: transparent;
+  }
+
+  .cds--form__helper-text {
+    color: $text-secondary;
+    font-size: 0.75rem;
+    margin-top: $spacing-02;
+  }
+}
+
+.extraction-settings-filters {
+  margin-top: $spacing-05;
+
+  .filters-subtitle {
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: $text-primary;
+    margin: 0 0 $spacing-02 0;
+  }
+
+  .filters-description {
+    color: $text-secondary;
+    font-size: 0.75rem;
+    line-height: 1.4;
+    margin: 0 0 $spacing-04 0;
   }
 }
 
@@ -245,9 +446,13 @@
 }
 
 .filters-container {
-  display: flex;
-  flex-direction: column;
-  gap: $spacing-04;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: $spacing-04 $spacing-05;
+  
+  @include breakpoint-down(md) {
+    grid-template-columns: 1fr;
+  }
   
   .cds--checkbox-wrapper {
     margin-bottom: 0;
@@ -289,56 +494,46 @@
   display: flex;
   flex-direction: column;
   gap: $spacing-04;
-  max-height: 500px;
-  overflow-y: auto;
 }
 
 .history-item {
   padding: $spacing-05;
-  background-color: $layer-02;
-  border-radius: 4px;
-  border-left: 3px solid $border-interactive;
+  background-color: $layer-01;
+  border-radius: 8px;
+  border: 1px solid $border-subtle-01;
   transition: all 0.2s ease;
+  margin-bottom: $spacing-04;
   
   &:hover {
-    background-color: $layer-hover-02;
-    border-left-color: $link-primary;
+    background-color: $layer-hover-01;
+    box-shadow: 0 2px 6px rgba(0, 0, 0, 0.1);
+  }
+  
+  &:last-child {
+    margin-bottom: 0;
   }
 }
 
 .history-item-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  margin-bottom: $spacing-04;
-  padding-bottom: $spacing-03;
-  border-bottom: 1px solid $border-subtle-01;
-  gap: $spacing-04;
-  flex-wrap: wrap;
-}
-
-.history-download-btn {
-  margin-left: auto;
-}
-
-.history-delete-btn {
-  margin-left: 0.5rem;
-}
-
-.history-timestamp {
-  color: $text-secondary;
-  font-size: 0.875rem;
+  align-items: flex-start;
+  margin-bottom: $spacing-03;
+  gap: $spacing-03;
 }
 
 .history-item-details {
   display: flex;
   flex-direction: column;
-  gap: $spacing-03;
+  gap: $spacing-02;
 }
 
 .history-detail {
-  display: flex;
+  display: grid;
+  grid-template-columns: 120px 1fr;
   gap: $spacing-03;
+  align-items: center;
+  font-size: 0.875rem;
   
   &.error {
     color: $text-error;
@@ -348,13 +543,40 @@
 .history-label {
   font-weight: 600;
   color: $text-secondary;
-  min-width: 100px;
   font-size: 0.875rem;
 }
 
 .history-value {
   color: $text-primary;
   font-size: 0.875rem;
+  word-break: break-word;
+}
+
+.history-job-id {
+  font-weight: 700;
+  font-size: 1rem;
+  color: $text-primary;
+  margin-bottom: $spacing-02;
+}
+
+.history-timestamp {
+  color: $text-secondary;
+  font-size: 0.75rem;
+  margin-bottom: $spacing-03;
+}
+
+.history-item-actions {
+  display: flex;
+  gap: $spacing-02;
+  justify-content: flex-end;
+  margin-top: $spacing-03;
+  padding-top: $spacing-03;
+  border-top: 1px solid $border-subtle-01;
+  
+  .cds--btn {
+    min-height: 2rem;
+    min-width: 32px;
+  }
 }
 
 .empty-history {
@@ -362,22 +584,25 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  padding: $spacing-07;
+  padding: $spacing-07 $spacing-05;
   color: $text-secondary;
   text-align: center;
+  min-height: 200px;
   
   p {
     margin: $spacing-02 0;
-    font-size: 1.5rem;
+    font-size: 1.25rem;
     
     &:first-child {
-      font-size: 2rem;
+      font-size: 2.5rem;
+      margin-bottom: $spacing-03;
     }
   }
   
   .empty-history-subtitle {
-    font-size: 0.875rem;
+    font-size: 0.75rem;
     opacity: 0.7;
+    line-height: 1.4;
   }
 }
 
@@ -449,7 +674,7 @@
   }
 
   .empty-extractions-subtitle {
-    font-size: 0.875rem;
+    font-size: 0.75rem;
     color: #8d8d8d;
   }
 }
