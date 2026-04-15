@@ -25,9 +25,10 @@ import {
   Pagination,
   RadioButtonGroup,
   RadioButton,
-  TextArea
+  TextArea,
+  Tooltip
 } from '@carbon/react';
-import { Renew, Download, StopFilled, TrashCan, View } from '@carbon/icons-react';
+import { Renew, Download, StopFilled, TrashCan, View, Calendar, Time, Information } from '@carbon/icons-react';
 import axios from 'axios';
 import './App.scss';
 
@@ -54,6 +55,7 @@ function App() {
   const [viewFilename, setViewFilename] = useState('');
   const [viewLoading, setViewLoading] = useState(false);
   const [finalDuration, setFinalDuration] = useState(null);
+  const [datePickerKey, setDatePickerKey] = useState(0);
 
   // Fetch status from API
   const fetchStatus = useCallback(async () => {
@@ -73,12 +75,22 @@ function App() {
           
           // Capture final duration when transitioning to finished
           if (newStatus.status === 'finished') {
+            console.log('Capturing final duration:', {
+              duration_seconds: newStatus.duration_seconds,
+              end_time: newStatus.end_time,
+              start_time: newStatus.start_time
+            });
             if (newStatus.duration_seconds) {
+              console.log('Using duration_seconds:', newStatus.duration_seconds);
               setFinalDuration(newStatus.duration_seconds);
             } else if (newStatus.end_time && newStatus.start_time) {
-              setFinalDuration(newStatus.end_time - newStatus.start_time);
+              const calculated = newStatus.end_time - newStatus.start_time;
+              console.log('Calculated from end-start:', calculated);
+              setFinalDuration(calculated);
             } else if (newStatus.start_time) {
-              setFinalDuration(Math.floor(Date.now() / 1000 - newStatus.start_time));
+              const calculated = Math.floor(Date.now() / 1000 - newStatus.start_time);
+              console.log('Calculated from now-start:', calculated);
+              setFinalDuration(calculated);
             }
           }
         }
@@ -244,12 +256,49 @@ function App() {
     }
   }, []);
 
-  // Handle filter checkbox change
+  // Handle filter checkbox change with dependencies
   const handleFilterChange = (filterId, checked) => {
-    setSelectedFilters(prev => ({
-      ...prev,
-      [filterId]: checked
-    }));
+    setSelectedFilters(prev => {
+      const newFilters = { ...prev };
+      
+      // If checking a filter, also check its dependencies
+      if (checked) {
+        newFilters[filterId] = true;
+        
+        // Define filter dependencies
+        const dependencies = {
+          'cloud_activity_validation': ['isv_validation', 'dormancy_check', 'federated_id_removal'],
+          'federated_id_removal': ['isv_validation', 'dormancy_check'],
+          'dormancy_check': ['isv_validation']
+        };
+        
+        // Auto-select dependencies
+        if (dependencies[filterId]) {
+          dependencies[filterId].forEach(depId => {
+            newFilters[depId] = true;
+          });
+        }
+      } else {
+        // If unchecking a filter, also uncheck filters that depend on it
+        newFilters[filterId] = false;
+        
+        // Define reverse dependencies (what depends on this filter)
+        const reverseDependencies = {
+          'isv_validation': ['dormancy_check', 'federated_id_removal', 'cloud_activity_validation'],
+          'dormancy_check': ['federated_id_removal', 'cloud_activity_validation'],
+          'federated_id_removal': ['cloud_activity_validation']
+        };
+        
+        // Auto-unselect dependent filters
+        if (reverseDependencies[filterId]) {
+          reverseDependencies[filterId].forEach(depId => {
+            newFilters[depId] = false;
+          });
+        }
+      }
+      
+      return newFilters;
+    });
   };
 
   // Handle view data
@@ -458,8 +507,20 @@ function App() {
         setEndTime('23:59');
         setSpecificIds('');
         setBatchSize(3000);
-        setSelectedFilters({});
+        
+        // Reset to default filters (ISV Validation, Dormancy Check, Federated ID removal)
+        const defaultFilters = {};
+        availableFilters.forEach(filter => {
+          if (filter.id === 'isv_validation' ||
+              filter.id === 'dormancy_check' ||
+              filter.id === 'federated_id_removal') {
+            defaultFilters[filter.id] = true;
+          }
+        });
+        setSelectedFilters(defaultFilters);
+        
         setPolling(false);
+        setDatePickerKey(prev => prev + 1); // Force DatePicker re-render
         
         setNotification({
           kind: 'success',
@@ -551,9 +612,11 @@ function App() {
               </div>
 
               {extractionMode === 'date_range' && (
-                <div className="date-picker-container">
-                  <div className="datetime-group">
+                <div className="datetime-inline-container">
+                  <div className="datetime-inline-row">
+                    {/* Start Date */}
                     <DatePicker
+                      key={`start-date-${datePickerKey}`}
                       datePickerType="single"
                       onChange={(dates) => {
                         if (dates && dates.length > 0) {
@@ -569,23 +632,27 @@ function App() {
                       <DatePickerInput
                         id="start-date"
                         placeholder="yyyy-mm-dd"
-                        labelText="Start Date"
+                        labelText={<span><Calendar size={16} style={{marginRight: '4px', verticalAlign: 'middle'}} /> Start</span>}
                         disabled={isDisabled}
                       />
                     </DatePicker>
+
+                    {/* Start Time */}
                     <TimePicker
                       id="start-time"
-                      labelText="Start Time"
+                      labelText={<Time size={16} />}
                       value={startTime}
                       onChange={(e) => setStartTime(e.target.value)}
                       disabled={isDisabled}
                       pattern="^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$"
                       placeholder="HH:MM"
                     />
-                  </div>
 
-                  <div className="datetime-group">
+                    <span className="datetime-spacer"></span>
+
+                    {/* End Date */}
                     <DatePicker
+                      key={`end-date-${datePickerKey}`}
                       datePickerType="single"
                       onChange={(dates) => {
                         if (dates && dates.length > 0) {
@@ -601,13 +668,15 @@ function App() {
                       <DatePickerInput
                         id="end-date"
                         placeholder="yyyy-mm-dd"
-                        labelText="End Date"
+                        labelText={<span><Calendar size={16} style={{marginRight: '4px', verticalAlign: 'middle'}} /> End</span>}
                         disabled={isDisabled}
                       />
                     </DatePicker>
+
+                    {/* End Time */}
                     <TimePicker
                       id="end-time"
-                      labelText="End Time"
+                      labelText={<Time size={16} />}
                       value={endTime}
                       onChange={(e) => setEndTime(e.target.value)}
                       disabled={isDisabled}
@@ -657,15 +726,27 @@ function App() {
             </p>
             <div className="filters-container">
               {availableFilters.map((filter) => (
-                <Checkbox
-                  key={filter.id}
-                  id={filter.id}
-                  labelText={filter.name}
-                  checked={selectedFilters[filter.id] || false}
-                  onChange={(e) => handleFilterChange(filter.id, e.target.checked)}
-                  disabled={isDisabled}
-                  helperText={filter.description}
-                />
+                <div key={filter.id} className="filter-item-wrapper">
+                  <Checkbox
+                    id={filter.id}
+                    labelText={
+                      <span className="filter-label-with-icon">
+                        {filter.name}
+                        <Tooltip
+                          align="top"
+                          label={filter.description}
+                        >
+                          <button className="filter-info-button" type="button">
+                            <Information size={16} />
+                          </button>
+                        </Tooltip>
+                      </span>
+                    }
+                    checked={selectedFilters[filter.id] || false}
+                    onChange={(e) => handleFilterChange(filter.id, e.target.checked)}
+                    disabled={isDisabled}
+                  />
+                </div>
               ))}
             </div>
             {availableFilters.length === 0 && (
@@ -914,23 +995,53 @@ function App() {
                       <div className="history-detail">
                         <span className="history-label">Extraction Mode</span>
                         <span className="history-value">
-                          {entry.extraction_mode === 'specific_ids' ? 'Specific IDs' : 'Date Range (ISV, Dormancy)'}
+                          {entry.extraction_mode === 'specific_ids' ? 'Specific IDs' : 'Date Range'}
                         </span>
                       </div>
+                      {entry.extraction_mode !== 'specific_ids' && entry.start_date && entry.end_date && (
+                        <div className="history-detail">
+                          <span className="history-label">Date Range</span>
+                          <span className="history-value">
+                            {entry.start_date} to {entry.end_date}
+                          </span>
+                        </div>
+                      )}
                       <div className="history-detail">
                         <span className="history-label">Records</span>
                         <span className="history-value">
                           {entry.records_processed?.toLocaleString() || 0}
                         </span>
                       </div>
+                      {entry.extraction_mode !== 'specific_ids' && entry.months_processed > 0 && (
+                        <div className="history-detail">
+                          <span className="history-label">Months</span>
+                          <span className="history-value">
+                            {entry.months_processed}
+                          </span>
+                        </div>
+                      )}
                       <div className="history-detail">
-                        <span className="history-label">Status</span>
+                        <span className="history-label">Duration</span>
                         <span className="history-value">
-                          <Tag type={entry.status === 'completed' ? 'green' : 'red'}>
-                            {entry.status === 'completed' ? 'Completed' : entry.error ? 'Failed (Network Error)' : 'Failed'}
-                          </Tag>
+                          {entry.duration_seconds >= 60
+                            ? `${Math.floor(entry.duration_seconds / 60)}m ${entry.duration_seconds % 60}s`
+                            : `${entry.duration_seconds}s`}
                         </span>
                       </div>
+                      {entry.filters && Object.keys(entry.filters).some(k => entry.filters[k]) && (
+                        <div className="history-detail">
+                          <span className="history-label">Filters</span>
+                          <span className="history-value history-filters">
+                            {Object.keys(entry.filters)
+                              .filter(k => entry.filters[k])
+                              .map(filterId => {
+                                const filter = availableFilters.find(f => f.id === filterId);
+                                return filter ? filter.name : filterId;
+                              })
+                              .join(', ')}
+                          </span>
+                        </div>
+                      )}
                     </div>
                     <div className="history-item-actions">
                       <Button
