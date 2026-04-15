@@ -431,12 +431,16 @@ class ExtractorWrapper:
             # This runs for both successful completion and stopped extraction
             if hasattr(self, 'extraction_successful') and self.extraction_successful:
                 logger.info("Updating status to finished...")
+                
+                # Recalculate duration to include validation time
+                total_duration = int(time.time() - start_time)
+                
                 # Preserve validation_progress when transitioning to finished
                 current_status = StatusManager.load_status()
                 update_data = {
                     'status': 'finished',
                     'error': None,
-                    'duration_seconds': self.duration_seconds,
+                    'duration_seconds': total_duration,
                     'filters': self.filter_config
                 }
                 # Keep validation_progress if it exists
@@ -457,7 +461,7 @@ class ExtractorWrapper:
                     'status': 'completed',
                     'error': None,
                     'timestamp': datetime.now().isoformat(),
-                    'duration_seconds': self.duration_seconds,
+                    'duration_seconds': total_duration,
                     'filename': output_file,
                     'filters': self.filter_config,
                     'extraction_mode': self.extraction_mode
@@ -1382,21 +1386,14 @@ def delete_history_entry(history_id):
 @app.route('/api/history/clear-all', methods=['DELETE'])
 def clear_all_history():
     """
-    Clear all history entries and delete all associated files.
+    Clear all history entries and delete ALL files from extraction and output directories.
     """
     try:
         # Load history
         history = HistoryManager.load_history()
         
-        if not history:
-            return jsonify({
-                'success': True,
-                'message': 'No history to clear'
-            })
-        
         files_deleted_count = 0
         files_failed_count = 0
-        entries_processed = 0
         
         # Get absolute path to backend directory
         backend_dir = os.path.dirname(os.path.abspath(__file__))
@@ -1407,72 +1404,55 @@ def clear_all_history():
         
         print(f"=== CLEAR ALL OPERATION START ===")
         print(f"Backend directory: {backend_dir}")
-        print(f"Directories to check: {directories}")
-        print(f"Total history entries: {len(history)}")
+        print(f"Directories to clear: {directories}")
+        print(f"History entries to clear: {len(history)}")
         logger.info(f"=== CLEAR ALL OPERATION START ===")
         logger.info(f"Backend directory: {backend_dir}")
-        logger.info(f"Directories to check: {directories}")
-        logger.info(f"Total history entries: {len(history)}")
+        logger.info(f"Directories to clear: {directories}")
+        logger.info(f"History entries: {len(history)}")
         
-        # Delete all files for each entry
-        for entry in history:
-            try:
-                # Use the ID from history entry which matches the timestamp in filenames
-                entry_id = entry.get('id', '')
-                print(f"Processing entry ID: {entry_id}")
-                logger.info(f"Processing entry ID: {entry_id}")
-                
-                if entry_id:
-                    # Use prefix matching (YYYYMMDD_HHMM) to catch files created within same minute
-                    # This handles cases where file timestamp differs by a few seconds from history entry
-                    timestamp_prefix = entry_id[:13] if len(entry_id) >= 13 else entry_id  # YYYYMMDD_HHMM
-                    print(f"Using timestamp prefix for matching: {timestamp_prefix}")
-                    logger.info(f"Using timestamp prefix for matching: {timestamp_prefix}")
+        # Delete ALL files from both directories
+        for directory in directories:
+            if os.path.exists(directory):
+                print(f"Clearing directory: {directory}")
+                logger.info(f"Clearing directory: {directory}")
+                try:
+                    files_in_dir = os.listdir(directory)
+                    print(f"Found {len(files_in_dir)} files")
+                    logger.info(f"Found {len(files_in_dir)} files")
                     
-                    # Delete files from all directories
-                    for directory in directories:
-                        if os.path.exists(directory):
-                            print(f"Checking directory: {directory}")
-                            files_in_dir = os.listdir(directory)
-                            print(f"Files in directory: {files_in_dir}")
-                            for filename in files_in_dir:
-                                if timestamp_prefix in filename:
-                                    file_path = os.path.join(directory, filename)
-                                    print(f"Found matching file: {filename}")
-                                    logger.info(f"Found matching file: {filename}")
-                                    try:
-                                        os.remove(file_path)
-                                        print(f"✓ Deleted: {file_path}")
-                                        logger.info(f"✓ Deleted: {file_path}")
-                                        files_deleted_count += 1
-                                    except Exception as e:
-                                        print(f"✗ Failed to delete {file_path}: {e}")
-                                        logger.warning(f"✗ Failed to delete {file_path}: {e}")
-                                        files_failed_count += 1
-                        else:
-                            print(f"Directory does not exist: {directory}")
-                            logger.warning(f"Directory does not exist: {directory}")
-                
-                entries_processed += 1
-                
-            except Exception as e:
-                print(f"Error processing entry: {e}")
-                logger.error(f"Error deleting files for entry {entry.get('id')}: {e}")
+                    for filename in files_in_dir:
+                        file_path = os.path.join(directory, filename)
+                        if os.path.isfile(file_path):  # Only delete files, not directories
+                            try:
+                                os.remove(file_path)
+                                print(f"✓ Deleted: {filename}")
+                                logger.info(f"✓ Deleted: {filename}")
+                                files_deleted_count += 1
+                            except Exception as e:
+                                print(f"✗ Failed to delete {filename}: {e}")
+                                logger.warning(f"✗ Failed to delete {filename}: {e}")
+                                files_failed_count += 1
+                except Exception as e:
+                    print(f"Error clearing directory {directory}: {e}")
+                    logger.error(f"Error clearing directory {directory}: {e}")
+            else:
+                print(f"Directory does not exist: {directory}")
+                logger.warning(f"Directory does not exist: {directory}")
         
         print(f"=== CLEAR ALL OPERATION COMPLETE ===")
-        print(f"Entries processed: {entries_processed}")
         print(f"Files deleted: {files_deleted_count}")
         print(f"Files failed: {files_failed_count}")
         
         # Clear the history file
         HistoryManager.save_history([])
         
-        logger.info(f"Cleared all history: {entries_processed} entries, {files_deleted_count} files deleted, {files_failed_count} files failed")
+        logger.info(f"Cleared all history: {len(history)} entries, {files_deleted_count} files deleted, {files_failed_count} files failed")
         
         return jsonify({
             'success': True,
-            'message': f'Cleared {entries_processed} history entries and {files_deleted_count} files',
-            'entries_cleared': entries_processed,
+            'message': f'Cleared {len(history)} history entries and {files_deleted_count} files',
+            'entries_cleared': len(history),
             'files_deleted': files_deleted_count,
             'files_failed': files_failed_count
         })

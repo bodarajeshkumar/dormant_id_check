@@ -212,28 +212,67 @@
 }
 
 
-.date-picker-container {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: $spacing-05;
-  
+.datetime-inline-container {
+  margin-bottom: $spacing-05;
+}
+
+.datetime-inline-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 0;
+  flex-wrap: wrap;
+
   @include breakpoint-down(md) {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
+    gap: $spacing-03;
+  }
+
+  .cds--date-picker {
+    flex: 0 0 auto;
+    width: 180px;
+    margin-right: $spacing-01;
+
+    @include breakpoint-down(md) {
+      width: 100%;
+      margin-right: 0;
+    }
+  }
+
+  .cds--date-picker input {
+    max-width: 180px;
+
+    @include breakpoint-down(md) {
+      max-width: 100%;
+    }
+  }
+
+  .cds--time-picker {
+    flex: 0 0 auto;
+    width: 120px;
+
+    @include breakpoint-down(md) {
+      width: 100%;
+    }
+  }
+
+  .cds--time-picker input {
+    max-width: 120px;
+
+    @include breakpoint-down(md) {
+      max-width: 100%;
+    }
   }
 }
 
-.datetime-group {
-  display: flex;
-  flex-direction: column;
-  gap: $spacing-03;
-  
-  .cds--date-picker,
-  .cds--time-picker {
-    width: 100%;
-  }
-  
-  .cds--time-picker input {
-    width: 100%;
+.datetime-spacer {
+  flex: 0 0 auto;
+  width: $spacing-06;
+  align-self: flex-end;
+  height: 2.5rem;
+
+  @include breakpoint-down(md) {
+    display: none;
   }
 }
 
@@ -470,6 +509,42 @@
   }
 }
 
+.filter-item-wrapper {
+  display: flex;
+  align-items: flex-start;
+}
+
+.filter-label-with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: $spacing-02;
+}
+
+.filter-info-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0;
+  cursor: pointer;
+  color: $icon-secondary;
+  transition: color 0.2s ease;
+  
+  &:hover {
+    color: $icon-primary;
+  }
+  
+  &:focus {
+    outline: 2px solid $focus;
+    outline-offset: 2px;
+  }
+  
+  svg {
+    display: block;
+  }
+}
+
 .no-filters {
   color: $text-secondary;
   font-style: italic;
@@ -550,6 +625,19 @@
   color: $text-primary;
   font-size: 0.875rem;
   word-break: break-word;
+  
+  &.history-filters {
+    color: $text-primary;
+    font-weight: 500;
+    line-height: 1.5;
+  }
+  
+  &.history-filename {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 0.75rem;
+    color: $link-primary;
+    word-break: break-all;
+  }
 }
 
 .history-job-id {
